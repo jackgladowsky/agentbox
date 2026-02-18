@@ -29,32 +29,24 @@ npm install
 
 ### Create your agent
 
-Each agent lives in `~/.agentbox/<agent-name>/`. Create a config:
+Use the built-in wizard:
 
 ```bash
-mkdir -p ~/.agentbox/myagent
-
-cat > ~/.agentbox/myagent/config.json << 'EOF'
-{
-  "name": "MyAgent",
-  "telegram": {
-    "token": "YOUR_BOT_TOKEN",
-    "allowedUsers": [YOUR_TELEGRAM_USER_ID]
-  }
-}
-EOF
+agentbox-create
 ```
 
-Optionally give your agent a personality:
+This walks you through naming your agent and setting up Telegram, then creates `~/.agentbox/<name>/` with everything you need:
 
-```bash
-cat > ~/.agentbox/myagent/SOUL.md << 'EOF'
-You are MyAgent. You are direct, curious, and get things done.
-...
-EOF
+```
+~/.agentbox/myagent/
+  config.json     ← name, model, telegram token + allowed users
+  SOUL.md         ← personality / system prompt (edit this)
+  notes/          ← persistent memory (auto-managed by agent)
+  memory/         ← daily summaries
+  schedule.json   ← scheduled tasks
 ```
 
-The agent will also maintain its own `~/.agentbox/myagent/notes/` directory for persistent memory across sessions.
+Or skip the wizard and pass a name directly: `agentbox-create myagent`
 
 ### Authenticate Claude
 

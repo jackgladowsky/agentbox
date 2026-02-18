@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/home/jack/agentbox
-ExecStart=/home/jack/.nvm/versions/node/v22.21.0/bin/node /home/jack/agentbox/node_modules/.bin/tsx src/scheduler.ts
+ExecStart=/home/jack/.nvm/versions/node/v22.21.0/bin/node /home/jack/.nvm/versions/node/v22.21.0/bin/tsx src/scheduler.ts
 Restart=on-failure
 RestartSec=30
 StandardOutput=journal
