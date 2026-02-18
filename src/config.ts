@@ -28,6 +28,8 @@ export interface AgentConfig {
   model?: string;
   /** Telegram connection config — token lives in secrets.json */
   telegram?: TelegramConfig;
+  /** OpenRouter API key — loaded from secrets.json, used for compaction */
+  openrouterKey?: string;
 }
 
 export interface AgentSecrets {
@@ -35,6 +37,8 @@ export interface AgentSecrets {
   telegramToken?: string;
   /** Telegram allowed user IDs (can also be in config.json if not sensitive) */
   telegramAllowedUsers?: number[];
+  /** OpenRouter API key for cheap/large-context model calls (e.g. compaction) */
+  openrouterKey?: string;
 }
 
 /**
@@ -87,7 +91,7 @@ export async function loadAgentConfig(name: string = getAgentName()): Promise<Ag
     );
   }
 
-  // Merge secrets — token + allowedUsers from secrets.json override config.json
+  // Merge secrets — values from secrets.json override config.json
   const secrets = await loadAgentSecrets(name);
 
   if (secrets.telegramToken) {
@@ -95,6 +99,10 @@ export async function loadAgentConfig(name: string = getAgentName()): Promise<Ag
       token: secrets.telegramToken,
       allowedUsers: secrets.telegramAllowedUsers ?? config.telegram?.allowedUsers ?? [],
     };
+  }
+
+  if (secrets.openrouterKey) {
+    config.openrouterKey = secrets.openrouterKey;
   }
 
   return config;
