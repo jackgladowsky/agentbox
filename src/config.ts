@@ -2,14 +2,15 @@
  * Agent configuration loader.
  *
  * Each agent lives in ~/.agentbox/<agent-name>/
- *   config.json  — name, model, connection tokens, allowed users
- *   SOUL.md      — personality / system prompt
- *   notes/       — persistent memory (read by workspace.ts)
+ *   config.json   — name, model, non-sensitive settings (safe to commit)
+ *   secrets.json  — tokens, API keys (gitignored, never commit)
+ *   SOUL.md       — personality / system prompt
+ *   notes/        — persistent memory (read by workspace.ts)
  *
- * Agent is selected via AGENT env var (default: reads config.json agentName or "agent").
+ * Agent is selected via AGENT env var (default: "agent").
  */
 
-import { readFile, writeFile, mkdir, access } from "fs/promises";
+import { readFile } from "fs/promises";
 import { join } from "path";
 import { homedir } from "os";
 
@@ -25,8 +26,15 @@ export interface AgentConfig {
   name: string;
   /** Anthropic model ID */
   model?: string;
-  /** Telegram connection config */
+  /** Telegram connection config — token lives in secrets.json */
   telegram?: TelegramConfig;
+}
+
+export interface AgentSecrets {
+  /** Telegram bot token */
+  telegramToken?: string;
+  /** Telegram allowed user IDs (can also be in config.json if not sensitive) */
+  telegramAllowedUsers?: number[];
 }
 
 /**
@@ -44,30 +52,52 @@ export function agentDir(name: string = getAgentName()): string {
 }
 
 /**
- * Load config.json for the given agent.
- * Throws with a helpful message if missing.
+ * Load secrets.json for the given agent (returns empty object if missing).
+ */
+async function loadAgentSecrets(name: string): Promise<AgentSecrets> {
+  const secretsPath = join(agentDir(name), "secrets.json");
+  try {
+    const raw = await readFile(secretsPath, "utf-8");
+    return JSON.parse(raw);
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Load config.json for the given agent, merged with secrets.json.
+ * Tokens from secrets.json take precedence over anything in config.json.
+ * Throws with a helpful message if config.json is missing.
  */
 export async function loadAgentConfig(name: string = getAgentName()): Promise<AgentConfig> {
   const configPath = join(agentDir(name), "config.json");
+  let config: AgentConfig;
+
   try {
     const raw = await readFile(configPath, "utf-8");
-    return JSON.parse(raw);
+    config = JSON.parse(raw);
   } catch {
     throw new Error(
       `No config found for agent "${name}" at ${configPath}\n\n` +
-      `Create it with:\n` +
+      `Run: agentbox-create ${name}\n\n` +
+      `Or create manually:\n` +
       `  mkdir -p ~/.agentbox/${name}\n` +
-      `  cat > ~/.agentbox/${name}/config.json << 'EOF'\n` +
-      `  {\n` +
-      `    "name": "${name}",\n` +
-      `    "telegram": {\n` +
-      `      "token": "YOUR_BOT_TOKEN",\n` +
-      `      "allowedUsers": [YOUR_TELEGRAM_USER_ID]\n` +
-      `    }\n` +
-      `  }\n` +
-      `  EOF`
+      `  echo '{"name":"${name}"}' > ~/.agentbox/${name}/config.json\n` +
+      `  echo '{"telegramToken":"YOUR_TOKEN","telegramAllowedUsers":[YOUR_ID]}' > ~/.agentbox/${name}/secrets.json`
     );
   }
+
+  // Merge secrets — token + allowedUsers from secrets.json override config.json
+  const secrets = await loadAgentSecrets(name);
+
+  if (secrets.telegramToken) {
+    config.telegram = {
+      token: secrets.telegramToken,
+      allowedUsers: secrets.telegramAllowedUsers ?? config.telegram?.allowedUsers ?? [],
+    };
+  }
+
+  return config;
 }
 
 /**

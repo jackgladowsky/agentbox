@@ -7,7 +7,8 @@
  *   agentbox-create <name>      — skip name prompt
  *
  * Creates ~/.agentbox/<name>/ with:
- *   config.json       — name, model, telegram config
+ *   config.json       — name, model (safe to commit)
+ *   secrets.json      — tokens, API keys (gitignored, never commit)
  *   SOUL.md           — personality / system prompt (editable)
  *   notes/            — persistent memory directory
  *   memory/           — daily summaries directory
@@ -65,12 +66,16 @@ You are ${name}. You run directly on hardware as an autonomous agent.
 `;
 }
 
-function defaultConfig(name: string, telegramToken?: string, allowedUsers?: number[]): object {
-  const config: any = { name };
-  if (telegramToken && allowedUsers?.length) {
-    config.telegram = { token: telegramToken, allowedUsers };
-  }
-  return config;
+function defaultConfig(name: string): object {
+  return { name };
+}
+
+function defaultSecrets(telegramToken?: string, allowedUsers?: number[]): object | null {
+  if (!telegramToken) return null;
+  return {
+    telegramToken,
+    telegramAllowedUsers: allowedUsers ?? [],
+  };
 }
 
 function defaultSchedule(): object {
@@ -155,9 +160,18 @@ async function main() {
 
   await writeFile(
     join(agentPath, "config.json"),
-    JSON.stringify(defaultConfig(name, token, allowedUsers), null, 2),
+    JSON.stringify(defaultConfig(name), null, 2),
     "utf-8"
   );
+
+  const secrets = defaultSecrets(token, allowedUsers);
+  if (secrets) {
+    await writeFile(
+      join(agentPath, "secrets.json"),
+      JSON.stringify(secrets, null, 2),
+      "utf-8"
+    );
+  }
 
   await writeFile(join(agentPath, "SOUL.md"), defaultSoul(name), "utf-8");
 
@@ -173,10 +187,17 @@ async function main() {
     "utf-8"
   );
 
+  await writeFile(
+    join(agentPath, ".gitignore"),
+    "secrets.json\nscheduler.log\n",
+    "utf-8"
+  );
+
   // Summary
   console.log(`\n✅ Agent "${name}" created at ${agentPath}\n`);
   console.log("Files created:");
-  console.log(`  ${agentPath}/config.json     — name, model, telegram config`);
+  console.log(`  ${agentPath}/config.json     — name, model (safe to commit)`);
+  if (secrets) console.log(`  ${agentPath}/secrets.json    — tokens (gitignored)`);
   console.log(`  ${agentPath}/SOUL.md         — personality (edit this!)`);
   console.log(`  ${agentPath}/notes/          — persistent memory`);
   console.log(`  ${agentPath}/memory/         — daily summaries`);
