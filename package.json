@@ -1,7 +1,7 @@
 {
   "name": "agentbox",
   "version": "1.0.0",
-  "description": "An autonomous AI agent that controls its own hardware.",
+  "description": "An autonomous AI agent runtime for dedicated hardware.",
   "main": "index.js",
   "scripts": {
     "dev": "tsx src/index.tsx",
@@ -13,8 +13,16 @@
     "type": "git",
     "url": "git+https://github.com/jackgladowsky/agentbox.git"
   },
-  "keywords": [],
-  "author": "",
+  "keywords": [
+    "ai",
+    "agent",
+    "autonomous",
+    "claude",
+    "telegram",
+    "hardware",
+    "self-hosted"
+  ],
+  "author": "Jack Gladowsky",
   "license": "ISC",
   "bugs": {
     "url": "https://github.com/jackgladowsky/agentbox/issues"

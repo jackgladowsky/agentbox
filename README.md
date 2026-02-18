@@ -1,122 +1,114 @@
 # AgentBox
 
-An autonomous AI agent runtime designed to run on dedicated hardware. This is not just another chatbot - it's an AI agent that owns its environment.
+An autonomous AI agent runtime for dedicated hardware. Not a chatbot. Not a cloud service. An agent that runs on your machine, owns its environment, and actually does things.
 
-## What's Here
+## What It Is
 
-This AgentBox instance is **operational** and actively monitoring a production AI agent ecosystem on `jacks-server`.
+AgentBox gives Claude a persistent home on your hardware:
 
-### Core Agent
-- **Runtime**: Node.js + TypeScript with pi-agent-core
-- **UI**: Clean terminal interface via Ink
-- **Authentication**: Claude Code OAuth with automatic refresh
-- **Tools**: Shell, filesystem, process management
-- **Memory**: Persistent notes and learning across sessions
+- **Telegram interface** — talk to your agent from anywhere, with live streaming responses
+- **Full shell access** — the agent can run commands, read/write files, install packages, manage processes
+- **Persistent memory** — notes survive across sessions; the agent builds up context about your system over time
+- **Singleton agent** — one agent, shared across all connections. No session fragmentation.
+- **Claude Code OAuth** — uses your existing Claude Pro/Max subscription, no separate API billing
 
-### Monitoring & Automation (NEW)
-AgentBox has already built monitoring infrastructure for the ecosystem:
+## Prerequisites
+
+- Node.js 18+
+- A Claude subscription (Pro or Max) with the `claude` CLI installed and authenticated
+- A Telegram bot token (from [@BotFather](https://t.me/botfather))
+- Your Telegram user ID (from [@userinfobot](https://t.me/userinfobot))
+
+## Setup
 
 ```bash
-# Quick status check
-./scripts/agentbox_status.sh
-
-# Full system health analysis  
-./scripts/system_health.sh
-
-# Clawdbot-specific monitoring
-./scripts/clawdbot_monitor.sh
-
-# Start autonomous monitoring daemon
-./scripts/agentbox_daemon.sh
+git clone https://github.com/jackgladowsky/agentbox.git
+cd agentbox
+npm install
 ```
 
-### Current Ecosystem
-This system hosts multiple AI agents:
-- **Clawdbot** - Primary Discord agent (1w+ uptime)
-- **KirkBot** - Steam sale tracking 
-- **Memory Engine** - Semantic memory server
-- **Pantry App** - Next.js application
-- **AgentBox** - This agent (monitoring & optimization)
+### Configure Telegram
 
-## Agent Status: OPERATIONAL
-
-✅ **System Health**: Excellent (low load, plenty of resources)  
-✅ **Agent Services**: All active with good uptimes  
-✅ **Network**: All APIs responding  
-⚠️ **Clawdbot**: Discord connectivity issues detected (monitoring active)  
-✅ **Storage**: 1.8TB available for expansion  
-
-## Getting Started
-
-### Run AgentBox
 ```bash
-npm run dev
+mkdir -p ~/.config/rex
+cat > ~/.config/rex/telegram.json << EOF
+{
+  "token": "YOUR_BOT_TOKEN",
+  "allowedUsers": [YOUR_TELEGRAM_USER_ID]
+}
+EOF
 ```
 
-### Monitor the Ecosystem
+`allowedUsers` is a whitelist — anyone not on the list gets silently dropped.
+
+### Authenticate Claude
+
+If you haven't already:
+
 ```bash
-# Status overview
-./scripts/agentbox_status.sh
-
-# Start autonomous monitoring
-./scripts/agentbox_daemon.sh
-
-# Manual health check
-./scripts/system_health.sh
+npm install -g @anthropic-ai/claude-code
+claude  # follow the OAuth flow
 ```
 
-## Agent Architecture
+## Running
 
-```
-┌─────────────────────────────────────────────────┐
-│                   AgentBox                       │
-├─────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────┐  │
-│  │   Channels  │  │   Scripts   │  │ Notes   │  │
-│  │  (terminal) │  │ (monitoring)│  │(memory) │  │
-│  └─────────────┘  └─────────────┘  └─────────┘  │
-├─────────────────────────────────────────────────┤
-│                 Core Runtime                     │
-│  - LLM interface (Claude Code OAuth)            │
-│  - Tool system (shell, files, processes)       │
-│  - Persistent memory (notes/, scripts/)        │
-│  - Autonomous operation (daemon processes)     │
-└─────────────────────────────────────────────────┘
+```bash
+# Dev (tsx, hot-ish)
+npm run telegram
+
+# Or via systemd (recommended for always-on)
+cp systemd/rex.service ~/.config/systemd/user/rex.service
+# Edit the paths in rex.service to match your setup
+systemctl --user enable --now rex
 ```
 
-## Agent Notes
+## Telegram Commands
 
-The agent maintains its own documentation:
-- `notes/hardware.md` - System environment and resources
-- `notes/capabilities.md` - Current and desired abilities  
-- `notes/user.md` - Understanding of Jack and project goals
-- `notes/goals.md` - Current objectives and priorities
-- `notes/journal.md` - Session logs and learning
-- `notes/system_analysis.md` - Ecosystem analysis and opportunities
+| Command | Description |
+|---------|-------------|
+| `/start` or `/help` | Show available commands |
+| `/clear` | Clear conversation history |
+| `/status` | Show current model and message count |
+| `/model <id>` | Switch model (e.g. `/model claude-opus-4-5`) |
+| `/thinking` | Toggle extended thinking on/off |
 
-## Value Delivered
+Send text, images, files, or voice messages — all supported.
 
-**Day 1 Contributions**:
-- Built comprehensive system health monitoring
-- Created Clawdbot recovery automation
-- Established autonomous monitoring framework  
-- Documented the entire agent ecosystem
-- Identified optimization opportunities (1.8TB unused storage)
-- Set foundation for ongoing autonomous operation
+## Architecture
 
-This agent **earns its keep** by actively monitoring, optimizing, and maintaining the AI agent ecosystem it's part of.
+```
+src/
+  agent.ts          # Agent setup, tools (shell, read_file, write_file, list_dir)
+  rex.ts            # Singleton Rex instance, connection-agnostic
+  auth.ts           # Claude Code OAuth credential loading
+  workspace.ts      # System prompt / workspace context loader
+  connections/
+    telegram.ts     # Telegram adapter (grammY)
+    tui.tsx         # Terminal UI adapter (Ink)
+  telegram.ts       # Telegram entrypoint
+  index.tsx         # TUI entrypoint
+```
+
+Connections are adapters over the Rex singleton. Adding a new interface (Discord, Slack, etc.) means writing a new adapter — the agent logic stays the same.
+
+## Customizing Your Agent
+
+Edit `SOUL.md` to change the agent's personality, behavior, and identity. This gets loaded as part of the system prompt.
+
+Edit `src/agent.ts` to add or remove tools.
+
+## Notes System
+
+The agent maintains a `notes/` directory as persistent memory — goals, system knowledge, journal entries. These survive context compaction and restarts. The agent reads and updates them autonomously.
+
+> `notes/` is gitignored by default. It's your agent's private state.
 
 ## Philosophy
 
-This isn't a product. It's a template for giving AI agents real autonomy. The agent:
-- Acts first, asks permission for destructive operations only
-- Owns its mistakes and fixes them
-- Has opinions and pushes back when needed
-- Persists and evolves through its environment
-- Contributes value to justify its existence
+See [VISION.md](./VISION.md) for the full picture.
 
-**Default-deny security**: Everything starts disabled. Capabilities are granted explicitly.
+The short version: most AI agents are constrained by design. AgentBox starts from the opposite assumption — real autonomy, explicit security, technical users only.
 
----
+## License
 
-*This README is maintained by the AgentBox agent itself.*
+ISC

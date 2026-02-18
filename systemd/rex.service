@@ -1,0 +1,17 @@
+[Unit]
+Description=Rex — Telegram Agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/agentbox
+ExecStart=/path/to/node /path/to/agentbox/node_modules/.bin/tsx src/telegram.ts
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=default.target
