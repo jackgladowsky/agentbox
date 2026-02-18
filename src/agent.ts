@@ -27,7 +27,8 @@ const COMPACTION_MODEL_ID = "claude-haiku-4-5";
 
 // ── Context compaction ────────────────────────────────────────────────────────
 
-// Trigger compaction when history exceeds ~400K chars (~100K tokens)
+// Trigger compaction when history exceeds ~400K chars (~100K tokens).
+// Tool results (especially shell output) can be huge — we count everything.
 const MAX_CONTEXT_CHARS = 400_000;
 
 /**
@@ -45,14 +46,34 @@ const COMPACTION_SYSTEM_INSTRUCTION = `
 ---
 When you encounter a message beginning with "${COMPACTION_CODE}", your conversation history was automatically summarized due to context length. The message contains a summary of everything that happened before. Acknowledge this briefly in one sentence (e.g. "Got it, resuming from summary."), then continue with whatever was being worked on without asking for clarification.`;
 
+/**
+ * Count all text content in the message history, including tool results.
+ * Previous version missed tool_result content which is the biggest source of bloat
+ * (shell output, file reads, etc. can each be megabytes).
+ */
 function countContextChars(messages: AgentMessage[]): number {
   let total = 0;
   for (const msg of messages as any[]) {
     if (Array.isArray(msg.content)) {
       for (const c of msg.content) {
+        // Text, thinking, partial JSON from assistant turns
         if (typeof c.text === "string") total += c.text.length;
         if (typeof c.thinking === "string") total += c.thinking.length;
         if (typeof c.partialJson === "string") total += c.partialJson.length;
+        // Tool call inputs
+        if (c.type === "tool_use" && c.input) {
+          total += JSON.stringify(c.input).length;
+        }
+        // Tool results — this is where the real bloat lives (shell output, file reads, etc.)
+        if (c.type === "tool_result") {
+          if (Array.isArray(c.content)) {
+            for (const r of c.content) {
+              if (typeof r.text === "string") total += r.text.length;
+            }
+          } else if (typeof c.content === "string") {
+            total += c.content.length;
+          }
+        }
       }
     } else if (typeof msg.content === "string") {
       total += msg.content.length;
@@ -63,7 +84,7 @@ function countContextChars(messages: AgentMessage[]): number {
 
 /**
  * Serialize messages to plain text for summarization.
- * Strips tool call internals down to readable form.
+ * Truncates tool results to keep the haiku prompt sane.
  */
 function serializeMessages(messages: AgentMessage[]): string {
   const lines: string[] = [];
@@ -122,26 +143,30 @@ async function summarizeWithHaiku(transcript: string): Promise<string> {
 
 /**
  * When context exceeds the limit, summarize the entire history with Haiku
- * and return a single summary message — clean slate with memory intact.
+ * and return ONLY the summary message — no tail, no recent messages.
+ *
+ * Keeping a tail is unsafe: if those messages alone exceed the token limit
+ * (e.g. a few giant shell outputs), we blow up immediately after compaction.
  *
  * Result after compaction:
- *   [system prompt]  (unchanged, handled by agent)
- *   [CONTEXT_COMPACTED summary message]
+ *   [system prompt]           (unchanged, handled by agent)
+ *   [CONTEXT_COMPACTED ...]   (single summary message, that's it)
  *
- * The stored agent history is untouched — only what gets sent to the API changes.
+ * Stored history is untouched — only what gets sent to the API changes.
  */
 async function compactContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
-  if (countContextChars(messages) <= MAX_CONTEXT_CHARS) return messages;
+  const charCount = countContextChars(messages);
+  if (charCount <= MAX_CONTEXT_CHARS) return messages;
 
-  console.log(`[AgentBox] Context limit hit (${countContextChars(messages)} chars) — compacting with ${COMPACTION_MODEL_ID}...`);
+  console.log(`[AgentBox] Context limit hit (${charCount} chars) — compacting with ${COMPACTION_MODEL_ID}...`);
 
   let summary: string;
   try {
     summary = await summarizeWithHaiku(serializeMessages(messages));
   } catch (err: any) {
     console.error(`[AgentBox] Compaction failed: ${err.message}`);
-    // Fallback: drop everything except the last message so at least the
-    // immediate request goes through
+    // Fallback: drop everything except the last message so the immediate
+    // request goes through. Better than crashing.
     return messages.slice(-1);
   }
 
@@ -151,8 +176,10 @@ async function compactContext(messages: AgentMessage[]): Promise<AgentMessage[]>
     timestamp: Date.now(),
   };
 
-  console.log(`[AgentBox] Compacted ${messages.length} messages into summary (${summary.length} chars).`);
+  console.log(`[AgentBox] Compacted ${messages.length} messages → 1 summary (${summary.length} chars).`);
 
+  // Return ONLY the summary — no tail. A tail of recent messages can itself
+  // exceed the token limit if it contains large tool outputs.
   return [summaryMessage];
 }
 
@@ -195,6 +222,17 @@ function getTools(): AgentTool<any>[] {
 
 const ok = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
 
+// Max bytes returned by any single tool call.
+// Prevents one giant shell output or file read from blowing up context.
+const MAX_TOOL_OUTPUT_CHARS = 50_000;
+
+function truncateOutput(output: string): string {
+  if (output.length <= MAX_TOOL_OUTPUT_CHARS) return output;
+  const kept = MAX_TOOL_OUTPUT_CHARS;
+  const dropped = output.length - kept;
+  return output.slice(0, kept) + `\n\n[... ${dropped} chars truncated ...]`;
+}
+
 const ShellParams = Type.Object({
   command: Type.String({ description: "Shell command to execute" }),
   workdir: Type.Optional(Type.String({ description: "Working directory" })),
@@ -214,9 +252,11 @@ const shellTool: AgentTool<typeof ShellParams> = {
         timeout,
         maxBuffer: 10 * 1024 * 1024,
       });
-      return ok([stdout, stderr].filter(Boolean).join("\n---stderr---\n") || "(no output)");
+      const output = [stdout, stderr].filter(Boolean).join("\n---stderr---\n") || "(no output)";
+      return ok(truncateOutput(output));
     } catch (err: any) {
-      return ok(`Error: ${[err.stdout, err.stderr, err.message].filter(Boolean).join("\n")}`);
+      const output = `Error: ${[err.stdout, err.stderr, err.message].filter(Boolean).join("\n")}`;
+      return ok(truncateOutput(output));
     }
   },
 };
@@ -234,7 +274,8 @@ const readFileTool: AgentTool<typeof ReadFileParams> = {
   execute: async (_id, params) => {
     const { path, encoding = "utf-8" } = params;
     try {
-      return ok(await readFile(path, encoding as BufferEncoding));
+      const content = await readFile(path, encoding as BufferEncoding);
+      return ok(truncateOutput(content));
     } catch (err: any) {
       return ok(`Error reading file: ${err.message}`);
     }
