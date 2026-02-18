@@ -77,6 +77,9 @@ class AgentBox {
         for (const cb of this.listeners.values()) cb(event, source);
         if (event.type === "agent_end") {
           unsubscribe();
+          if (agent.state.error) {
+            console.error(`[AgentBox] Agent error (${source.id}): ${agent.state.error}`);
+          }
           resolve();
         }
       });
