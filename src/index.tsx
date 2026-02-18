@@ -2,12 +2,15 @@ import React, { useState, useEffect, useCallback, useRef, useMemo } from "react"
 import { render, Box, Text, useInput, useApp } from "ink";
 import TextInput from "ink-text-input";
 import { Agent, type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
-import { type TextContent, type ThinkingContent, type ToolCall } from "@mariozechner/pi-ai";
+import { type TextContent, type ToolCall } from "@mariozechner/pi-ai";
 import { createAgent, DEFAULT_MODEL } from "./agent.js";
 import { hasCredentials, login } from "./auth.js";
 import { loadWorkspaceContext, type WorkspaceContext } from "./workspace.js";
 
 type AppState = "ready" | "responding" | "error";
+
+// How many past messages to show in the terminal window
+const MAX_VISIBLE_MESSAGES = 10;
 
 interface ChatHistory {
   messages: AgentMessage[];
@@ -20,6 +23,62 @@ interface Props {
   context: WorkspaceContext;
 }
 
+function MessageView({ msg, index }: { msg: AgentMessage; index: number }) {
+  if (msg.role === "user") {
+    const text = typeof msg.content === "string"
+      ? msg.content
+      : msg.content.filter((c): c is TextContent => c.type === "text").map(c => c.text).join("");
+    return (
+      <Box marginY={0}>
+        <Text color="cyan" bold>you&gt; </Text>
+        <Text wrap="wrap">{text}</Text>
+      </Box>
+    );
+  }
+
+  if (msg.role === "assistant") {
+    const textParts: string[] = [];
+    const toolCalls: ToolCall[] = [];
+
+    for (const part of msg.content) {
+      if (part.type === "text") textParts.push(part.text);
+      else if (part.type === "toolCall") toolCalls.push(part);
+    }
+
+    return (
+      <Box flexDirection="column" marginY={0}>
+        {textParts.length > 0 && (
+          <Box>
+            <Text color="green" bold>rex&gt; </Text>
+            <Text wrap="wrap">{textParts.join("")}</Text>
+          </Box>
+        )}
+        {toolCalls.map((tc, j) => (
+          <Box key={j} marginLeft={2}>
+            <Text color="yellow" bold>[{tc.name}] </Text>
+            <Text color="gray">{JSON.stringify(tc.arguments).slice(0, 100)}</Text>
+          </Box>
+        ))}
+      </Box>
+    );
+  }
+
+  if (msg.role === "toolResult") {
+    const text = msg.content
+      .filter((c): c is TextContent => c.type === "text")
+      .map(c => c.text)
+      .join("");
+    const preview = text.length > 200 ? text.slice(0, 200) + "…" : text;
+    return (
+      <Box marginLeft={2} marginY={0}>
+        <Text color={msg.isError ? "red" : "gray"}>└─ {preview}</Text>
+      </Box>
+    );
+  }
+
+  return null;
+}
+
 function App({ agent, context }: Props) {
   const { exit } = useApp();
   const [state, setState] = useState<AppState>("ready");
@@ -28,77 +87,56 @@ function App({ agent, context }: Props) {
   const [history, setHistory] = useState<ChatHistory>({
     messages: [],
     streamingText: "",
-    isStreaming: false
+    isStreaming: false,
   });
-  
-  // Refs to prevent excessive re-renders
+
   const streamingTextRef = useRef("");
   const updateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Subscribe to agent events
   useEffect(() => {
     const unsubscribe = agent.subscribe((event: AgentEvent) => {
       switch (event.type) {
         case "agent_start":
           setState("responding");
           streamingTextRef.current = "";
-          setHistory(prev => ({
-            ...prev,
-            streamingText: "",
-            isStreaming: true
-          }));
+          setHistory(prev => ({ ...prev, streamingText: "", isStreaming: true }));
           break;
-          
+
         case "message_update":
-          // Throttle streaming updates to prevent flickering
           if (event.message.role === "assistant") {
-            const textParts = event.message.content
+            const text = event.message.content
               .filter((c): c is TextContent => c.type === "text")
-              .map((c) => c.text);
-            streamingTextRef.current = textParts.join("");
-            
-            // Debounce UI updates
-            if (updateTimeoutRef.current) {
-              clearTimeout(updateTimeoutRef.current);
-            }
+              .map(c => c.text)
+              .join("");
+            streamingTextRef.current = text;
+
+            if (updateTimeoutRef.current) clearTimeout(updateTimeoutRef.current);
             updateTimeoutRef.current = setTimeout(() => {
-              setHistory(prev => ({
-                ...prev,
-                streamingText: streamingTextRef.current
-              }));
-            }, 50); // Update every 50ms instead of every character
+              setHistory(prev => ({ ...prev, streamingText: streamingTextRef.current }));
+            }, 80);
           }
           break;
-          
+
         case "agent_end":
-          if (updateTimeoutRef.current) {
-            clearTimeout(updateTimeoutRef.current);
-          }
-          setHistory(prev => ({
+          if (updateTimeoutRef.current) clearTimeout(updateTimeoutRef.current);
+          setHistory({
             messages: [...event.messages],
             streamingText: "",
-            isStreaming: false
-          }));
+            isStreaming: false,
+          });
           setState("ready");
           break;
-          
+
         case "tool_execution_start":
-          // Show tool execution without excessive updates
-          const toolText = `\n[${event.toolName}] executing...`;
-          streamingTextRef.current += toolText;
-          setHistory(prev => ({
-            ...prev,
-            streamingText: streamingTextRef.current
-          }));
+          streamingTextRef.current += `\n[${event.toolName}] running...`;
+          setHistory(prev => ({ ...prev, streamingText: streamingTextRef.current }));
           break;
       }
     });
 
     return () => {
       unsubscribe();
-      if (updateTimeoutRef.current) {
-        clearTimeout(updateTimeoutRef.current);
-      }
+      if (updateTimeoutRef.current) clearTimeout(updateTimeoutRef.current);
     };
   }, [agent]);
 
@@ -106,67 +144,44 @@ function App({ agent, context }: Props) {
     const trimmed = value.trim();
     if (!trimmed) return;
 
-    // Clear any error state
     setError(null);
 
-    // Handle commands
-    if (trimmed === "/exit" || trimmed === "/quit") {
-      exit();
-      return;
-    }
-    
+    if (trimmed === "/exit" || trimmed === "/quit") { exit(); return; }
+
     if (trimmed === "/clear") {
       agent.clearMessages();
-      setHistory({
-        messages: [],
-        streamingText: "",
-        isStreaming: false
-      });
+      setHistory({ messages: [], streamingText: "", isStreaming: false });
       setInput("");
       return;
     }
-    
+
     if (trimmed.startsWith("/model ")) {
       const modelId = trimmed.slice(7).trim();
       try {
         agent.setModel({ ...DEFAULT_MODEL, id: modelId });
-        console.log(`✓ Switched to model: ${modelId}`);
-      } catch (err) {
-        setError(`Invalid model: ${modelId}`);
+        setError(`Switched to ${modelId}`);
+      } catch {
+        setError(`Unknown model: ${modelId}`);
       }
       setInput("");
       return;
     }
-    
-    if (trimmed === "/thinking on") {
-      agent.setThinkingLevel("medium");
-      console.log("✓ Thinking enabled");
-      setInput("");
-      return;
-    }
-    
-    if (trimmed === "/thinking off") {
-      agent.setThinkingLevel("off");
-      console.log("✓ Thinking disabled");
-      setInput("");
-      return;
-    }
+
+    if (trimmed === "/thinking on") { agent.setThinkingLevel("medium"); setInput(""); return; }
+    if (trimmed === "/thinking off") { agent.setThinkingLevel("off"); setInput(""); return; }
 
     if (trimmed === "/help") {
-      console.log("Commands:");
-      console.log("  /model <id>    - Switch model (e.g., /model claude-opus-4-6)");
-      console.log("  /thinking on   - Enable thinking mode");
-      console.log("  /thinking off  - Disable thinking mode");
-      console.log("  /clear         - Clear conversation");
-      console.log("  /exit          - Exit AgentBox");
-      console.log("  /help          - Show this help");
+      setError([
+        "/model <id>   switch model",
+        "/thinking on|off",
+        "/clear        clear history",
+        "/exit         quit",
+      ].join("\n"));
       setInput("");
       return;
     }
 
-    // Clear input and send prompt
     setInput("");
-    
     try {
       await agent.prompt(trimmed);
     } catch (err) {
@@ -175,134 +190,82 @@ function App({ agent, context }: Props) {
     }
   }, [agent, exit]);
 
-  // Handle Ctrl+C for abort/exit
   useInput((_, key) => {
     if (key.ctrl && key.return) {
-      if (state === "responding") {
-        agent.abort();
-        console.log("\n⚠️  Aborted");
-      } else {
-        exit();
-      }
+      if (state === "responding") agent.abort();
+      else exit();
     }
   });
 
-  // Memoize message rendering to prevent unnecessary re-renders
-  const renderedMessages = useMemo(() => {
-    return history.messages.map((msg, i) => {
-      const key = `msg-${i}-${msg.role}`;
-      
-      if (msg.role === "user") {
-        const text = typeof msg.content === "string" 
-          ? msg.content 
-          : msg.content.filter((c): c is TextContent => c.type === "text").map(c => c.text).join("");
-        return (
-          <Box key={key} marginY={0}>
-            <Text color="cyan" bold>you&gt;</Text>
-            <Text> {text}</Text>
-          </Box>
-        );
-      }
-      
-      if (msg.role === "assistant") {
-        const textParts: string[] = [];
-        const toolCalls: ToolCall[] = [];
-        
-        for (const part of msg.content) {
-          if (part.type === "text") {
-            textParts.push(part.text);
-          } else if (part.type === "toolCall") {
-            toolCalls.push(part);
-          }
-        }
-        
-        return (
-          <Box key={key} flexDirection="column" marginY={0}>
-            {textParts.length > 0 && (
-              <Box>
-                <Text color="green" bold>agent&gt;</Text>
-                <Text> {textParts.join("")}</Text>
-              </Box>
-            )}
-            {toolCalls.map((tc, j) => (
-              <Box key={`${key}-tool-${j}`} marginLeft={2}>
-                <Text color="yellow" bold>[{tc.name}]</Text>
-                <Text color="gray"> {JSON.stringify(tc.arguments).slice(0, 80)}...</Text>
-              </Box>
-            ))}
-          </Box>
-        );
-      }
-      
-      if (msg.role === "toolResult") {
-        const text = msg.content
-          .filter((c): c is TextContent => c.type === "text")
-          .map(c => c.text)
-          .join("");
-        const preview = text.length > 150 ? text.slice(0, 150) + "..." : text;
-        return (
-          <Box key={key} marginLeft={2} marginY={0}>
-            <Text color={msg.isError ? "red" : "gray"}>└─ {preview}</Text>
-          </Box>
-        );
-      }
-      
-      return null;
-    }).filter(Boolean);
+  // Only show last N messages to avoid flicker on long conversations
+  const visibleMessages = useMemo(() => {
+    const msgs = history.messages;
+    const trimmed = msgs.length > MAX_VISIBLE_MESSAGES
+      ? msgs.slice(msgs.length - MAX_VISIBLE_MESSAGES)
+      : msgs;
+    return trimmed;
   }, [history.messages]);
 
-  // Status line
+  const truncated = history.messages.length > MAX_VISIBLE_MESSAGES;
+
   const statusLine = useMemo(() => {
     const modelName = agent.state.model.id;
-    const files = context.files.length > 0 ? ` • ${context.files.join(", ")}` : "";
-    return `AgentBox • ${modelName}${files}`;
-  }, [agent.state.model.id, context.files]);
+    const total = history.messages.length;
+    const countStr = total > 0 ? ` • ${total} msgs` : "";
+    return `rex @ agentbox • ${modelName}${countStr}`;
+  }, [agent.state.model.id, history.messages.length]);
 
   return (
-    <Box flexDirection="column" minHeight={24}>
-      {/* Clean header */}
+    <Box flexDirection="column">
+      {/* Header */}
       <Box borderStyle="round" borderColor="cyan" paddingX={1} marginBottom={1}>
         <Text color="cyan" bold>{statusLine}</Text>
       </Box>
 
-      {/* Message history - stable rendering */}
+      {/* Truncation notice */}
+      {truncated && (
+        <Box marginBottom={1} paddingX={1}>
+          <Text color="gray" dimColor>↑ older messages hidden • /clear to reset</Text>
+        </Box>
+      )}
+
+      {/* Message history - capped */}
       <Box flexDirection="column" flexGrow={1}>
-        {renderedMessages}
-        
-        {/* Streaming response - only render when actually streaming */}
-        {history.isStreaming && history.streamingText && (
+        {visibleMessages.map((msg, i) => (
+          <MessageView key={`${history.messages.length - visibleMessages.length + i}-${msg.role}`} msg={msg} index={i} />
+        ))}
+
+        {/* Streaming */}
+        {history.isStreaming && (
           <Box marginY={0}>
-            <Text color="green" bold>agent&gt;</Text>
-            <Text> {history.streamingText}</Text>
+            <Text color="green" bold>rex&gt; </Text>
+            <Text wrap="wrap">{history.streamingText}</Text>
             <Text color="gray">▌</Text>
           </Box>
         )}
       </Box>
 
-      {/* Error display */}
+      {/* Error / info */}
       {error && (
-        <Box marginY={1} borderStyle="round" borderColor="red" paddingX={1}>
-          <Text color="red">✗ {error}</Text>
+        <Box marginY={1} borderStyle="round" borderColor="yellow" paddingX={1}>
+          <Text color="yellow">{error}</Text>
         </Box>
       )}
 
-      {/* Input area - always at bottom */}
+      {/* Input */}
       <Box borderStyle="round" borderColor="gray" paddingX={1} marginTop={1}>
         {state === "ready" ? (
           <Box>
-            <Text color="cyan" bold>you&gt;</Text>
-            <Text> </Text>
-            <TextInput 
-              value={input} 
-              onChange={setInput} 
+            <Text color="cyan" bold>you&gt; </Text>
+            <TextInput
+              value={input}
+              onChange={setInput}
               onSubmit={handleSubmit}
-              placeholder="Type your message... (/help for commands)"
+              placeholder="message... (/help)"
             />
           </Box>
         ) : (
-          <Box>
-            <Text color="gray">Thinking... (Ctrl+Enter to abort)</Text>
-          </Box>
+          <Text color="gray">thinking… (Ctrl+Enter to abort)</Text>
         )}
       </Box>
     </Box>
@@ -310,34 +273,25 @@ function App({ agent, context }: Props) {
 }
 
 async function main() {
-  // Check credentials
   const hasAuth = await hasCredentials("anthropic");
   if (!hasAuth) {
-    console.log("🔑 No Anthropic credentials found.");
-    console.log("Run 'claude' CLI first to authenticate, or we'll try to load from Claude Code.");
-    
+    console.log("No Anthropic credentials found.");
     const success = await login("anthropic");
     if (!success) {
-      console.error("✗ Could not authenticate. Run 'claude' first.");
+      console.error("Could not authenticate. Run 'claude' first.");
       process.exit(1);
     }
-    console.log("✓ Authenticated successfully");
   }
 
-  // Load workspace context
-  console.log("🚀 Starting AgentBox...");
+  console.log("Starting AgentBox...");
   const context = await loadWorkspaceContext(process.cwd());
-
-  // Create agent
   const agent = createAgent(context.systemPrompt);
-  console.log(`✓ Agent ready with ${agent.state.model.id}`);
-  console.log("Type /help for commands\n");
+  console.log(`Rex ready — ${agent.state.model.id}`);
 
-  // Render clean UI
   render(<App agent={agent} context={context} />);
 }
 
-main().catch((err) => {
-  console.error("💥 Fatal error:", err);
+main().catch(err => {
+  console.error("Fatal:", err);
   process.exit(1);
 });
