@@ -7,6 +7,8 @@
 
 set -euo pipefail
 
+CLAUDE="/home/jack/.nvm/versions/node/v22.21.0/bin/claude"
+
 REPO="${1:?Usage: code-task.sh <repo-path> <branch-name> <task>}"
 BRANCH="${2:?Missing branch name}"
 TASK="${3:?Missing task description}"
@@ -14,10 +16,11 @@ TASK="${3:?Missing task description}"
 REPO_NAME="$(basename "$REPO")"
 WORKTREE="/tmp/worktrees/${REPO_NAME}/${BRANCH//\//-}"
 GH_REPO="$(git -C "$REPO" remote get-url origin | sed 's/.*github.com[:/]//' | sed 's/\.git$//')"
+DEFAULT_BRANCH="$(git -C "$REPO" remote show origin | grep 'HEAD branch' | awk '{print $NF}')"
 
 echo "=== coding skill ==="
 echo "Repo:      $REPO"
-echo "Branch:    $BRANCH"
+echo "Branch:    $BRANCH  (base: $DEFAULT_BRANCH)"
 echo "Worktree:  $WORKTREE"
 echo "GH Repo:   $GH_REPO"
 echo "Task:      $TASK"
@@ -30,20 +33,19 @@ git -C "$REPO" worktree add "$WORKTREE" -b "$BRANCH"
 
 # --- 2. Run Claude Code ---
 echo "[2/6] Running Claude Code..."
-CLAUDE_OUTPUT=$(claude -p --dangerously-skip-permissions \
-  --add-dir "$WORKTREE" \
-  "You are implementing a coding task in a git worktree at: $WORKTREE
+
+PROMPT="You are implementing a coding task in a git worktree at: $WORKTREE
 
 Task: $TASK
 
 Instructions:
 - Implement the task completely
-- Write or update tests as appropriate  
+- Write or update tests as appropriate
 - Run the test suite (npm test, make test, etc.) and fix any failures
 - Do NOT run git commands — the script handles commits
-- When done, output a brief summary of what you changed and what tests passed" \
-  2>&1)
+- When done, output a brief summary of what you changed and what tests passed"
 
+CLAUDE_OUTPUT=$(echo "$PROMPT" | "$CLAUDE" -p --dangerously-skip-permissions --add-dir "$WORKTREE" 2>&1)
 echo "$CLAUDE_OUTPUT"
 echo ""
 
@@ -53,7 +55,7 @@ TEST_OUTPUT=""
 TEST_PASSED=true
 
 cd "$WORKTREE"
-if [ -f "package.json" ] && grep -q '"test"' package.json; then
+if [ -f "package.json" ] && node -e "const p=require('./package.json'); process.exit(p.scripts&&p.scripts.test?0:1)" 2>/dev/null; then
   TEST_OUTPUT=$(npm test 2>&1) || TEST_PASSED=false
   echo "$TEST_OUTPUT"
 elif [ -f "Makefile" ] && grep -q "^test:" Makefile; then
@@ -63,23 +65,23 @@ else
   echo "(no test runner detected — skipping)"
   TEST_OUTPUT="No test runner detected."
 fi
-cd - > /dev/null
 
 # --- 4. Commit ---
 echo "[4/6] Committing..."
-git -C "$WORKTREE" add -A
-if git -C "$WORKTREE" diff --cached --quiet; then
+git add -A
+if git diff --cached --quiet; then
   echo "Nothing to commit — Claude Code may not have made changes"
+  cd - > /dev/null
   git -C "$REPO" worktree remove "$WORKTREE" --force
   exit 1
 fi
-git -C "$WORKTREE" commit -m "${BRANCH%%/*}: $TASK"
+git commit -m "${BRANCH%%/*}: $TASK"
 
 # --- 5. Push ---
 echo "[5/6] Pushing branch..."
-git -C "$WORKTREE" push -u origin "$BRANCH"
+git push -u origin "$BRANCH"
 
-# --- 6. Open PR ---
+# --- 6. Open PR (from inside worktree so gh has repo context) ---
 echo "[6/6] Opening PR..."
 
 if [ "$TEST_PASSED" = true ]; then
@@ -109,10 +111,12 @@ $TEST_OUTPUT
 PR_URL=$(gh pr create \
   --repo "$GH_REPO" \
   --head "$BRANCH" \
-  --base "main" \
+  --base "$DEFAULT_BRANCH" \
   --title "$TASK" \
   --body "$PR_BODY" \
   2>&1)
+
+cd - > /dev/null
 
 echo ""
 echo "=== Done ==="

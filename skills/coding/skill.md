@@ -43,7 +43,7 @@ WORKTREE="/tmp/worktrees/$(basename $REPO)/$BRANCH"
 git -C "$REPO" worktree add "$WORKTREE" -b "$BRANCH"
 
 # 2. Run Claude Code in the worktree
-claude -p --dangerously-skip-permissions \
+echo "$PROMPT" | claude -p --dangerously-skip-permissions \
   --add-dir "$WORKTREE" \
   "You are implementing a coding task in a git worktree. The repo is at $WORKTREE.
 
