@@ -1,48 +1,51 @@
 # Skills
 
-Skills are Rex's modular capabilities. Each skill wraps a CLI tool — either a prebuilt one (like `gh`, `vercel`, `docker`) or a custom one we build.
+Rex's modular capabilities. Each skill is a folder with a single `skill.md` describing the CLI tool, how to install it, auth requirements, and key commands.
 
 ## Structure
 
 ```
 skills/
   <skill-name>/
-    skill.json     ← metadata, auth requirements, commands
-  skill.template.json  ← copy this to start a new skill
+    skill.md          ← everything lives here
+  my-custom-cli/
+    skill.md          ← references the external git repo for the CLI
 ```
 
-## skill.json Fields
+Custom CLIs are their own git repos. `skill.md` just links to them — no code lives here.
 
-| Field | Description |
-|---|---|
-| `name` | Unique identifier |
-| `description` | What it does |
-| `cli.type` | `prebuilt` (existing CLI) or `custom` (we build it) |
-| `cli.binary` | The binary name (e.g. `gh`, `vercel`) |
-| `cli.install` | How to install it (method + command) |
-| `auth.required` | Does it need credentials? |
-| `auth.method` | `oauth`, `token`, `ssh_key`, `password` |
-| `auth.env_vars` | Env vars Rex checks to determine auth status |
-| `depends_on` | Other skill names this one requires |
-| `commands` | Key operations exposed to Rex |
-| `status` | Runtime-resolved: `installed`, `not_installed`, `needs_auth` |
+## skill.md Template
 
-## Current Skills
+```markdown
+# <name>
 
-| Skill | CLI | Status |
-|---|---|---|
-| git | `git` | ✅ prebuilt, installed |
-| github | `gh` | ✅ prebuilt, installed |
-| docker | `docker` | ✅ prebuilt, installed |
-| vercel | `vercel` | ❌ not installed (`npm i -g vercel`) |
-| restic | `restic` | ❌ not installed (`sudo apt install restic`) |
+Short description.
 
-## Adding a Skill
+## CLI
+- **Type:** prebuilt | custom
+- **Binary:** `<binary>`
+- **Install:** `<command>`
+- **Repo:** <git url>  ← custom CLIs only
 
-1. Copy `skill.template.json` to `skills/<name>/skill.json`
-2. Fill in the fields
-3. The runtime auto-discovers it on next load — no registration needed
+## Auth
+- **Required:** yes | no
+- **Method:** oauth | token | ssh_key | password
+- **Env:** `VAR_NAME`
+- **Notes:** ...
 
-## Custom Skills
+## Depends On
+- <other skill name>
 
-If no prebuilt CLI exists, build one. Put the binary in `skills/<name>/bin/` and set `cli.type: "custom"`. The install method can point to a local build script.
+## Commands
+- `<example command>`
+```
+
+## Skills
+
+| Skill | Type | Binary | Auth |
+|---|---|---|---|
+| git | prebuilt | `git` | no |
+| github | prebuilt | `gh` | yes |
+| docker | prebuilt | `docker` | optional |
+| vercel | prebuilt | `vercel` | yes |
+| restic | prebuilt | `restic` | yes |
