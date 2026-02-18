@@ -7,18 +7,22 @@
  * Features:
  * - Streaming responses with live message edits (feels like typing)
  * - File/image/voice downloads from Telegram → agent (saves to /tmp)
- * - /clear, /model, /thinking, /status, /help commands
+ * - /clear, /model, /thinking, /status, /update, /help commands
  */
 
 import { Bot, Context } from "grammy";
 import { writeFile, mkdir } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
+import { exec } from "child_process";
+import { promisify } from "util";
 import { agentbox, type MessageSource } from "../agentbox.js";
 import { type AgentEvent } from "@mariozechner/pi-agent-core";
 import { type TextContent } from "@mariozechner/pi-ai";
 import { loadAgentConfig, getAgentName } from "../config.js";
 import { MEMORY_SOURCE_ID } from "../memory.js";
+
+const execAsync = promisify(exec);
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -100,6 +104,7 @@ export async function startTelegram(): Promise<void> {
       `/status — show model + message count\n` +
       `/model <id> — switch model\n` +
       `/thinking — toggle extended thinking\n` +
+      `/update — pull latest code and restart\n` +
       `/help — this message`
     );
   });
@@ -110,6 +115,7 @@ export async function startTelegram(): Promise<void> {
       `/status — show model + message count\n` +
       `/model <id> — switch model (e.g. /model claude-opus-4-5)\n` +
       `/thinking — toggle extended thinking\n` +
+      `/update — pull latest code and restart\n` +
       `\nSend files/images and I'll receive them.`
     );
   });
@@ -121,11 +127,19 @@ export async function startTelegram(): Promise<void> {
 
   bot.command("status", async (ctx) => {
     const state = agentbox.instance.state;
+    // Get current git commit
+    let commit = "unknown";
+    try {
+      const { stdout } = await execAsync("git rev-parse --short HEAD", { cwd: process.cwd() });
+      commit = stdout.trim();
+    } catch { /* ignore */ }
+
     await ctx.reply(
       `Agent: ${displayName}\n` +
       `Model: ${state.model.id}\n` +
       `Messages: ${agentbox.messageCount}\n` +
-      `Thinking: ${state.thinkingLevel ?? "off"}`
+      `Thinking: ${state.thinkingLevel ?? "off"}\n` +
+      `Commit: ${commit}`
     );
   });
 
@@ -141,6 +155,30 @@ export async function startTelegram(): Promise<void> {
     const next = current === "off" ? "medium" : "off";
     agentbox.setThinkingLevel(next);
     await ctx.reply(`✓ Thinking: ${next}`);
+  });
+
+  bot.command("update", async (ctx) => {
+    await ctx.reply("⬇️ Pulling latest code...");
+    try {
+      const { stdout } = await execAsync("git pull --ff-only", { cwd: process.cwd() });
+      const summary = stdout.trim();
+
+      if (summary.includes("Already up to date")) {
+        await ctx.reply("✓ Already up to date. No restart needed.");
+        return;
+      }
+
+      await ctx.reply(`✓ Updated:\n${summary}\n\nRestarting...`);
+
+      // Give Telegram time to send the message before we exit
+      setTimeout(() => {
+        console.log("[Telegram] /update — restarting via systemd");
+        process.exit(0); // systemd Restart=on-failure brings us back up with new code
+      }, 1500);
+
+    } catch (err: any) {
+      await ctx.reply(`⚠️ Update failed:\n${err.message}`);
+    }
   });
 
   // ── Message handler ───────────────────────────────────────────────────────
