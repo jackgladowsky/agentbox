@@ -9,6 +9,7 @@ import { type Agent, type AgentEvent } from "@mariozechner/pi-agent-core";
 import { createAgent } from "./agent.js";
 import { loadWorkspaceContext } from "./workspace.js";
 import { loadAgentConfig } from "./config.js";
+import { loadCheckpoint, clearCheckpoint } from "./checkpoint.js";
 
 export type MessageSource = {
   /** Unique ID for routing replies back — e.g. telegram:123456, tui:local */
@@ -34,6 +35,13 @@ class AgentBox {
     this.agent = createAgent(systemPrompt, config.model, config.openrouterKey);
     const compactionModel = config.openrouterKey ? "openrouter/google/gemini-2.5-flash-lite" : "trim fallback";
     console.log(`[AgentBox] ${this._name} initialized — ${this.agent.state.model.id} (compaction: ${compactionModel})`);
+
+    // Restore context from last session if a fresh checkpoint exists.
+    const saved = await loadCheckpoint();
+    if (saved && saved.length > 0) {
+      this.agent.replaceMessages(saved);
+      console.log(`[AgentBox] Context restored from checkpoint (${saved.length} messages).`);
+    }
   }
 
   get name(): string {
@@ -47,6 +55,11 @@ class AgentBox {
 
   get messageCount(): number {
     return this.agent?.state.messages.length ?? 0;
+  }
+
+  /** Current messages — used for checkpoint saving on exit. */
+  get messages() {
+    return this.agent?.state.messages ?? [];
   }
 
   /** Subscribe to all agent events tagged with originating source. Returns unsubscribe fn. */
@@ -92,7 +105,13 @@ class AgentBox {
   }
 
   abort(): void { this.agent?.abort(); }
-  clearMessages(): void { this.agent?.clearMessages(); }
+
+  clearMessages(): void {
+    this.agent?.clearMessages();
+    // Discard checkpoint so the next restart also starts fresh.
+    clearCheckpoint().catch(() => {});
+  }
+
   setModel(modelId: string): void { this.agent?.setModel({ ...this.instance.state.model, id: modelId }); }
   setThinkingLevel(level: "off" | "low" | "medium" | "high"): void { this.agent?.setThinkingLevel(level); }
 

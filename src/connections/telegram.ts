@@ -8,6 +8,7 @@
  * - Streaming responses with live message edits (feels like typing)
  * - File/image/voice downloads from Telegram → agent (saves to /tmp)
  * - /clear, /reset, /new, /model, /thinking, /status, /update, /help commands
+ * - Context checkpoint: saves messages on SIGTERM, restores on startup
  */
 
 import { Bot, Context } from "grammy";
@@ -21,6 +22,7 @@ import { type AgentEvent } from "@mariozechner/pi-agent-core";
 import { type TextContent } from "@mariozechner/pi-ai";
 import { loadAgentConfig, getAgentName } from "../config.js";
 import { MEMORY_SOURCE_ID } from "../memory.js";
+import { saveCheckpoint } from "../checkpoint.js";
 
 const execAsync = promisify(exec);
 
@@ -84,6 +86,20 @@ export async function startTelegram(): Promise<void> {
   const allowed = new Set(allowedUsers);
   const displayName = config.name ?? agentName;
 
+  // ── Graceful shutdown: save checkpoint on SIGTERM ──────────────────────────
+  // systemd sends SIGTERM before restarting (e.g. after /update).
+  // We save messages to disk so context survives the restart.
+  process.once("SIGTERM", async () => {
+    console.log("[Telegram] SIGTERM received — saving checkpoint...");
+    try {
+      await saveCheckpoint(agentbox.messages as any);
+      console.log("[Telegram] Checkpoint saved. Exiting.");
+    } catch (err) {
+      console.error("[Telegram] Failed to save checkpoint:", err);
+    }
+    process.exit(0);
+  });
+
   // Auth middleware — drop everything from non-allowed users
   bot.use(async (ctx, next) => {
     const userId = ctx.from?.id;
@@ -124,7 +140,7 @@ export async function startTelegram(): Promise<void> {
 
   // Shared reset handler — clears history, replies immediately, no restart needed
   async function handleReset(ctx: Context) {
-    agentbox.clearMessages();
+    agentbox.clearMessages(); // also clears checkpoint
     await ctx.reply("✓ History cleared. Fresh session started.");
   }
 
@@ -177,10 +193,11 @@ export async function startTelegram(): Promise<void> {
 
       await ctx.reply(`✓ Updated:\n${summary}\n\nRestarting...`);
 
-      // Give Telegram time to send the message before we exit
+      // Give Telegram time to send the message before we exit.
+      // SIGTERM handler will fire and save the checkpoint.
       setTimeout(() => {
         console.log("[Telegram] /update — restarting via systemd");
-        process.exit(0); // systemd Restart=on-failure brings us back up with new code
+        process.kill(process.pid, "SIGTERM");
       }, 1500);
 
     } catch (err: any) {
@@ -223,6 +240,9 @@ export async function startTelegram(): Promise<void> {
 
     const unsubscribe = agentbox.subscribe(`telegram-reply:${sourceId(ctx)}`, async (event: AgentEvent, evtSource: MessageSource) => {
       if (evtSource.id !== source.id) return;
+
+      // Suppress memory write-back responses from being forwarded to the user.
+      if (evtSource.id === MEMORY_SOURCE_ID) return;
 
       if (event.type === "message_update" && event.message.role === "assistant") {
         const text = event.message.content
