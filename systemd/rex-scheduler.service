@@ -5,14 +5,15 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=/path/to/agentbox
-ExecStart=/path/to/node /path/to/agentbox/node_modules/.bin/tsx src/scheduler.ts
+WorkingDirectory=/home/jack/agentbox
+ExecStart=/home/jack/.nvm/versions/node/v22.21.0/bin/node /home/jack/agentbox/node_modules/.bin/tsx src/scheduler.ts
 Restart=on-failure
 RestartSec=30
 StandardOutput=journal
 StandardError=journal
 Environment=NODE_ENV=production
 Environment=AGENT=rex
+Environment=PATH=/home/jack/.nvm/versions/node/v22.21.0/bin:/usr/local/bin:/usr/bin:/bin
 
 [Install]
 WantedBy=default.target
