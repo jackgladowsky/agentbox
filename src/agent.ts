@@ -4,11 +4,12 @@
  */
 import { Agent, type AgentTool, type AgentMessage } from "@mariozechner/pi-agent-core";
 import {
-  getModel,
   getModels,
   registerBuiltInApiProviders,
+  streamSimple,
   Type,
   type KnownProvider,
+  type UserMessage,
 } from "@mariozechner/pi-ai";
 import { getApiKey } from "./auth.js";
 import { exec } from "child_process";
@@ -22,11 +23,14 @@ const execAsync = promisify(exec);
 registerBuiltInApiProviders();
 
 export const DEFAULT_MODEL_ID = "claude-sonnet-4-6";
+const COMPACTION_MODEL_ID = "claude-haiku-4-5";
 
-// ── Context pruning ───────────────────────────────────────────────────────────
+// ── Context compaction ────────────────────────────────────────────────────────
 
-// ~400K chars ≈ 100K tokens, leaving headroom for system prompt + output
+// Trigger compaction when history exceeds ~400K chars (~100K tokens)
 const MAX_CONTEXT_CHARS = 400_000;
+// Keep this many recent messages raw after compaction for recency/detail
+const RECENT_MESSAGES_TO_KEEP = 10;
 
 function countContextChars(messages: AgentMessage[]): number {
   let total = 0;
@@ -44,14 +48,97 @@ function countContextChars(messages: AgentMessage[]): number {
   return total;
 }
 
-async function pruneContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
-  if (countContextChars(messages) <= MAX_CONTEXT_CHARS) return messages;
-  const result = [...messages];
-  while (result.length > 6 && countContextChars(result) > MAX_CONTEXT_CHARS) {
-    result.shift();
+/**
+ * Serialize messages to plain text for summarization.
+ * Strips tool call internals down to readable form.
+ */
+function serializeMessages(messages: AgentMessage[]): string {
+  const lines: string[] = [];
+  for (const msg of messages as any[]) {
+    const role: string = msg.role ?? "unknown";
+    if (Array.isArray(msg.content)) {
+      for (const c of msg.content) {
+        if (typeof c.text === "string") {
+          lines.push(`[${role}]: ${c.text}`);
+        } else if (c.type === "tool_use") {
+          lines.push(`[${role} tool call: ${c.name}]: ${JSON.stringify(c.input ?? {}).slice(0, 200)}`);
+        } else if (c.type === "tool_result") {
+          const resultText = Array.isArray(c.content)
+            ? c.content.map((x: any) => x.text ?? "").join(" ")
+            : String(c.content ?? "");
+          lines.push(`[tool result]: ${resultText.slice(0, 300)}`);
+        }
+      }
+    } else if (typeof msg.content === "string") {
+      lines.push(`[${role}]: ${msg.content}`);
+    }
   }
-  console.log(`[AgentBox] Context pruned to ${result.length} messages`);
-  return result;
+  return lines.join("\n");
+}
+
+/**
+ * Call haiku to summarize the old portion of conversation history.
+ */
+async function summarizeWithHaiku(transcript: string): Promise<string> {
+  const apiKey = (await getApiKey("anthropic")) ?? undefined;
+  const model = getModels("anthropic" as KnownProvider).find(m => m.id === COMPACTION_MODEL_ID);
+  if (!model) throw new Error(`Compaction model not found: ${COMPACTION_MODEL_ID}`);
+
+  const systemPrompt =
+    "You are a conversation summarizer. Produce a concise but complete summary of the conversation below. " +
+    "Preserve: key decisions made, important facts learned, tasks completed, current goals, and any unresolved questions. " +
+    "Be factual and dense. No preamble.";
+
+  const userMessage: UserMessage = {
+    role: "user",
+    content: `Summarize this conversation:\n\n${transcript}`,
+    timestamp: Date.now(),
+  };
+
+  const eventStream = streamSimple(model, { systemPrompt, messages: [userMessage] }, { apiKey });
+
+  let summary = "";
+  for await (const event of eventStream) {
+    if (event.type === "text_delta") {
+      summary += event.delta;
+    }
+  }
+
+  return summary.trim();
+}
+
+/**
+ * When context exceeds the limit, summarize all but the most recent messages
+ * using Haiku, then return: [summary user message, ...recent raw messages].
+ * The stored agent history is untouched — only what gets sent to the API changes.
+ */
+async function compactContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
+  if (countContextChars(messages) <= MAX_CONTEXT_CHARS) return messages;
+
+  console.log(`[AgentBox] Context limit hit (${countContextChars(messages)} chars) — compacting with ${COMPACTION_MODEL_ID}...`);
+
+  const splitAt = Math.max(0, messages.length - RECENT_MESSAGES_TO_KEEP);
+  const toSummarize = messages.slice(0, splitAt);
+  const recent = messages.slice(splitAt);
+
+  let summary: string;
+  try {
+    summary = await summarizeWithHaiku(serializeMessages(toSummarize));
+  } catch (err: any) {
+    console.error(`[AgentBox] Compaction failed, falling back to trim: ${err.message}`);
+    // Fallback: just keep recent messages if haiku call fails
+    return recent;
+  }
+
+  const summaryMessage: UserMessage = {
+    role: "user",
+    content: `[Summary of conversation so far]\n\n${summary}`,
+    timestamp: toSummarize.length > 0 ? (toSummarize[0] as any).timestamp ?? Date.now() : Date.now(),
+  };
+
+  console.log(`[AgentBox] Compacted ${toSummarize.length} messages into summary (${summary.length} chars). Keeping ${recent.length} recent messages.`);
+
+  return [summaryMessage, ...recent];
 }
 
 export function resolveModel(modelId?: string) {
@@ -72,7 +159,7 @@ export function createAgent(systemPrompt: string, modelId?: string): Agent {
       thinkingLevel: "off",
       tools: getTools(),
     },
-    transformContext: pruneContext,
+    transformContext: compactContext,
     getApiKey: async (provider: string) => {
       if (provider === "anthropic") {
         return (await getApiKey("anthropic")) ?? undefined;
