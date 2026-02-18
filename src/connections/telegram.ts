@@ -18,6 +18,7 @@ import { agentbox, type MessageSource } from "../agentbox.js";
 import { type AgentEvent } from "@mariozechner/pi-agent-core";
 import { type TextContent } from "@mariozechner/pi-ai";
 import { loadAgentConfig, getAgentName } from "../config.js";
+import { MEMORY_SOURCE_ID } from "../memory.js";
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -149,6 +150,9 @@ export async function startTelegram(): Promise<void> {
       id: sourceId(ctx),
       label: `Telegram from ${ctx.from?.username ?? ctx.from?.id}`,
     };
+
+    // Signal activity so the memory module resets its idle timer.
+    agentbox.markActivity();
 
     console.log(`[Telegram] ${ctx.from?.username}: ${content.slice(0, 80)}`);
 

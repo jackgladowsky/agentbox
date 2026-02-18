@@ -6,6 +6,7 @@
 import { agentbox } from "./agentbox.js";
 import { hasCredentials, login } from "./auth.js";
 import { startTelegram } from "./connections/telegram.js";
+import { memory } from "./memory.js";
 
 async function main() {
   const hasAuth = await hasCredentials("anthropic");
@@ -16,6 +17,7 @@ async function main() {
   }
 
   await agentbox.init();
+  await memory.init();
   await startTelegram();
 }
 
