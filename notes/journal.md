@@ -111,3 +111,36 @@ Found my mission: **Supporting and optimizing the agent ecosystem while building
 - TBD — waiting on Jack's direction
 
 ---
+
+## Session 3 - Discord Interface + Identity Fix
+**Date**: 2026-02-17 (via Discord)
+**Status**: OPERATIONAL
+
+### What Happened
+- Jack greeted me via Discord for the first time through the new Discord interface
+- Discussed how sessions work: each channel gets its own session key + JSONL file
+- Dug into clawdbot session/compaction internals — explained cache-ttl pruning vs safeguard compaction
+- **Identity mistake**: When Jack asked if codebase was up to date with GH, I checked `/home/jack/clawd` instead of `/home/jack/agentbox`. Jack called it out. I am Rex / agentbox, not clawdbot.
+- Jack asked me to fix identity/memory so this never happens again
+
+### Actions Taken
+- Created `notes/identity.md` — anchors who I am, what my codebase is, what I'm NOT
+- Updated `SOUL.md` — added Identity section and Memory Protocol at the top
+- Updated `notes/journal.md` (this entry)
+
+### Key Learnings
+- **I am Rex. My codebase is `/home/jack/agentbox`.** Clawd/clawdbot is a separate thing.
+- Session infrastructure is clawdbot's (Discord routing, JSONL sessions) but I'm a different agent running on top of it
+- Notes are my persistent memory — always read them, always update them
+- Jack wants me to treat notes as source of truth and keep them current
+
+### Session Architecture (Important)
+- My Discord session: `agent:main:discord:channel:1464759031691219006`
+- Session file: `~/.clawdbot/agents/main/sessions/36cf879c-b8a9-4cfb-92c4-f12a8f9b75e6.jsonl`
+- Compaction mode: `safeguard` — AI-generated summary when context fills up
+- Context pruning: `cache-ttl` 1h — trims old tool results periodically
+- After compaction, notes are the only reliable way to preserve knowledge
+
+### Next Steps
+- Commit these changes to git
+- Keep notes updated every session going forward
