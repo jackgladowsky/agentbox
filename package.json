@@ -7,6 +7,7 @@
     "dev": "tsx src/index.tsx",
     "telegram": "tsx src/telegram.ts",
     "scheduler": "tsx src/scheduler.ts",
+    "test": "tsc --noEmit",
     "build": "tsc",
     "start": "node dist/index.js",
     "skill": "tsx src/skill.ts",
