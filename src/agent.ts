@@ -19,8 +19,8 @@ const execAsync = promisify(exec);
 // Register all built-in providers (Anthropic, OpenAI, Google, etc.)
 registerBuiltInApiProviders();
 
-// Default model - use getModel for proper typing
-export const DEFAULT_MODEL = getModel("anthropic", "claude-sonnet-4-20250514");
+// Default model - upgraded to latest Claude Sonnet 4.6 with reasoning
+export const DEFAULT_MODEL = getModel("anthropic", "claude-sonnet-4-6");
 
 /**
  * Create the AgentBox agent with tools
