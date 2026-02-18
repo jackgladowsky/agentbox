@@ -32,6 +32,21 @@ const MAX_CONTEXT_CHARS = 400_000;
 // Keep this many recent messages raw after compaction for recency/detail
 const RECENT_MESSAGES_TO_KEEP = 10;
 
+/**
+ * Marker prepended to compaction summary messages.
+ * The system prompt instructs the agent to recognize this and keep moving.
+ */
+export const COMPACTION_CODE = "[CONTEXT_COMPACTED]";
+
+/**
+ * Standing instruction appended to every agent's system prompt.
+ * Tells the agent what to do when it wakes up into a compacted context.
+ */
+const COMPACTION_SYSTEM_INSTRUCTION = `
+
+---
+When you encounter a message beginning with "${COMPACTION_CODE}", your conversation history was automatically summarized due to context length. The message contains a summary of everything that happened before. Acknowledge this briefly in one sentence (e.g. "Got it, resuming from summary."), then continue with whatever was being worked on without asking for clarification.`;
+
 function countContextChars(messages: AgentMessage[]): number {
   let total = 0;
   for (const msg of messages as any[]) {
@@ -126,13 +141,12 @@ async function compactContext(messages: AgentMessage[]): Promise<AgentMessage[]>
     summary = await summarizeWithHaiku(serializeMessages(toSummarize));
   } catch (err: any) {
     console.error(`[AgentBox] Compaction failed, falling back to trim: ${err.message}`);
-    // Fallback: just keep recent messages if haiku call fails
     return recent;
   }
 
   const summaryMessage: UserMessage = {
     role: "user",
-    content: `[Summary of conversation so far]\n\n${summary}`,
+    content: `${COMPACTION_CODE}\n\n${summary}`,
     timestamp: toSummarize.length > 0 ? (toSummarize[0] as any).timestamp ?? Date.now() : Date.now(),
   };
 
@@ -150,11 +164,12 @@ export function resolveModel(modelId?: string) {
 
 /**
  * Create an AgentBox agent with the standard tool set.
+ * Automatically appends the compaction instruction to the system prompt.
  */
 export function createAgent(systemPrompt: string, modelId?: string): Agent {
   const agent = new Agent({
     initialState: {
-      systemPrompt,
+      systemPrompt: systemPrompt + COMPACTION_SYSTEM_INSTRUCTION,
       model: resolveModel(modelId),
       thinkingLevel: "off",
       tools: getTools(),
