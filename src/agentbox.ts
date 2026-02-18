@@ -31,8 +31,9 @@ class AgentBox {
     const { systemPrompt, agentName } = await loadWorkspaceContext();
     const config = await loadAgentConfig(agentName);
     this._name = config.name ?? agentName;
-    this.agent = createAgent(systemPrompt, config.model);
-    console.log(`[AgentBox] ${this._name} initialized — ${this.agent.state.model.id}`);
+    this.agent = createAgent(systemPrompt, config.model, config.openrouterKey);
+    const compactionModel = config.openrouterKey ? "openrouter/google/gemini-2.5-flash-lite" : "trim fallback";
+    console.log(`[AgentBox] ${this._name} initialized — ${this.agent.state.model.id} (compaction: ${compactionModel})`);
   }
 
   get name(): string {

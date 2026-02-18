@@ -23,7 +23,6 @@ const execAsync = promisify(exec);
 registerBuiltInApiProviders();
 
 export const DEFAULT_MODEL_ID = "claude-sonnet-4-6";
-const COMPACTION_MODEL_ID = "claude-haiku-4-5";
 
 // ── Context compaction ────────────────────────────────────────────────────────
 
@@ -31,9 +30,10 @@ const COMPACTION_MODEL_ID = "claude-haiku-4-5";
 // Tool results (especially shell output) can be huge — we count everything.
 const MAX_CONTEXT_CHARS = 400_000;
 
-// Max chars of serialized transcript we'll send to haiku for summarization.
-// Haiku has a 200K token limit; ~800K chars is a safe ceiling.
-const MAX_TRANSCRIPT_CHARS = 800_000;
+// Primary compaction model: Gemini 2.5 Flash Lite via OpenRouter.
+// 1M context window — we can dump the entire transcript without truncation.
+const COMPACTION_MODEL_ID = "google/gemini-2.5-flash-lite";
+const COMPACTION_PROVIDER = "openrouter";
 
 /**
  * Marker prepended to compaction summary messages.
@@ -88,7 +88,7 @@ function countContextChars(messages: AgentMessage[]): number {
 
 /**
  * Serialize messages to plain text for summarization.
- * Truncates tool results to keep the haiku prompt sane.
+ * Produces a readable transcript of the full conversation.
  */
 function serializeMessages(messages: AgentMessage[]): string {
   const lines: string[] = [];
@@ -104,7 +104,7 @@ function serializeMessages(messages: AgentMessage[]): string {
           const resultText = Array.isArray(c.content)
             ? c.content.map((x: any) => x.text ?? "").join(" ")
             : String(c.content ?? "");
-          lines.push(`[tool result]: ${resultText.slice(0, 300)}`);
+          lines.push(`[tool result]: ${resultText.slice(0, 500)}`);
         }
       }
     } else if (typeof msg.content === "string") {
@@ -115,18 +115,12 @@ function serializeMessages(messages: AgentMessage[]): string {
 }
 
 /**
- * Call haiku to summarize the full conversation history.
+ * Summarize the full conversation transcript using Gemini 2.5 Flash Lite via OpenRouter.
+ * 1M context window — no truncation needed, we send the whole thing.
  */
-async function summarizeWithHaiku(transcript: string): Promise<string> {
-  const apiKey = (await getApiKey("anthropic")) ?? undefined;
-  const model = getModels("anthropic" as KnownProvider).find(m => m.id === COMPACTION_MODEL_ID);
-  if (!model) throw new Error(`Compaction model not found: ${COMPACTION_MODEL_ID}`);
-
-  // Guard: truncate transcript so we don't blow up haiku's own context limit.
-  // Take the tail (most recent) since that's more useful than the beginning.
-  const safeTranscript = transcript.length > MAX_TRANSCRIPT_CHARS
-    ? `[...earlier history truncated...]\n\n${transcript.slice(-MAX_TRANSCRIPT_CHARS)}`
-    : transcript;
+async function summarizeWithGemini(transcript: string, openrouterKey: string): Promise<string> {
+  const model = getModels(COMPACTION_PROVIDER as KnownProvider).find(m => m.id === COMPACTION_MODEL_ID);
+  if (!model) throw new Error(`Compaction model not found: ${COMPACTION_PROVIDER}/${COMPACTION_MODEL_ID}`);
 
   const systemPrompt =
     "You are a conversation summarizer. Produce a concise but complete summary of the conversation below. " +
@@ -135,11 +129,11 @@ async function summarizeWithHaiku(transcript: string): Promise<string> {
 
   const userMessage: UserMessage = {
     role: "user",
-    content: `Summarize this conversation:\n\n${safeTranscript}`,
+    content: `Summarize this conversation:\n\n${transcript}`,
     timestamp: Date.now(),
   };
 
-  const eventStream = streamSimple(model, { systemPrompt, messages: [userMessage] }, { apiKey });
+  const eventStream = streamSimple(model, { systemPrompt, messages: [userMessage] }, { apiKey: openrouterKey });
 
   let summary = "";
   for await (const event of eventStream) {
@@ -149,12 +143,26 @@ async function summarizeWithHaiku(transcript: string): Promise<string> {
   }
 
   const trimmed = summary.trim();
-  if (!trimmed) throw new Error("Haiku returned empty summary");
+  if (!trimmed) throw new Error("Gemini returned empty summary");
   return trimmed;
 }
 
 /**
- * When context exceeds the limit, summarize the entire history with Haiku
+ * Safe fallback when AI summarization fails.
+ * Drops oldest messages until we're under the limit.
+ * Guarantees no infinite loop — worst case we keep just the last message.
+ */
+function trimToLimit(messages: AgentMessage[]): AgentMessage[] {
+  let trimmed = messages.slice();
+  while (trimmed.length > 1 && countContextChars(trimmed) > MAX_CONTEXT_CHARS) {
+    trimmed = trimmed.slice(1);
+  }
+  console.log(`[AgentBox] Fallback trim: kept ${trimmed.length}/${messages.length} messages.`);
+  return trimmed;
+}
+
+/**
+ * When context exceeds the limit, summarize the entire history with Gemini 2.5 Flash Lite
  * and return ONLY the summary message — no tail, no recent messages.
  *
  * Keeping a tail is unsafe: if those messages alone exceed the token limit
@@ -166,25 +174,26 @@ async function summarizeWithHaiku(transcript: string): Promise<string> {
  *
  * Stored history is untouched — only what gets sent to the API changes.
  *
- * IMPORTANT: On any failure, we return [] (empty history) rather than a
- * partial slice. A partial slice can itself exceed the limit, causing an
- * infinite compaction loop. Empty history is safe — the agent just loses
- * context but keeps running.
+ * On failure: trimToLimit() drops oldest messages until under the limit.
+ * This is always safe — no infinite loop possible.
  */
-async function compactContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
+async function compactContext(messages: AgentMessage[], openrouterKey?: string): Promise<AgentMessage[]> {
   const charCount = countContextChars(messages);
   if (charCount <= MAX_CONTEXT_CHARS) return messages;
 
-  console.log(`[AgentBox] Context limit hit (${charCount} chars) — compacting with ${COMPACTION_MODEL_ID}...`);
+  console.log(`[AgentBox] Context limit hit (${charCount} chars) — compacting with ${COMPACTION_PROVIDER}/${COMPACTION_MODEL_ID}...`);
+
+  if (!openrouterKey) {
+    console.warn("[AgentBox] No OpenRouter key configured — falling back to trim.");
+    return trimToLimit(messages);
+  }
 
   let summary: string;
   try {
-    summary = await summarizeWithHaiku(serializeMessages(messages));
+    summary = await summarizeWithGemini(serializeMessages(messages), openrouterKey);
   } catch (err: any) {
-    console.error(`[AgentBox] Compaction failed: ${err.message} — clearing history to avoid loop`);
-    // Return empty array, NOT messages.slice(-1). A partial slice can still
-    // exceed the limit and cause an infinite compaction loop.
-    return [];
+    console.error(`[AgentBox] Compaction failed: ${err.message} — falling back to trim.`);
+    return trimToLimit(messages);
   }
 
   const summaryMessage: UserMessage = {
@@ -195,8 +204,6 @@ async function compactContext(messages: AgentMessage[]): Promise<AgentMessage[]>
 
   console.log(`[AgentBox] Compacted ${messages.length} messages → 1 summary (${summary.length} chars).`);
 
-  // Return ONLY the summary — no tail. A tail of recent messages can itself
-  // exceed the token limit if it contains large tool outputs.
   return [summaryMessage];
 }
 
@@ -210,8 +217,10 @@ export function resolveModel(modelId?: string) {
 /**
  * Create an AgentBox agent with the standard tool set.
  * Automatically appends the compaction instruction to the system prompt.
+ * Pass openrouterKey to enable AI-powered compaction (Gemini 2.5 Flash Lite).
+ * Without it, compaction falls back to trimming oldest messages.
  */
-export function createAgent(systemPrompt: string, modelId?: string): Agent {
+export function createAgent(systemPrompt: string, modelId?: string, openrouterKey?: string): Agent {
   const agent = new Agent({
     initialState: {
       systemPrompt: systemPrompt + COMPACTION_SYSTEM_INSTRUCTION,
@@ -219,7 +228,7 @@ export function createAgent(systemPrompt: string, modelId?: string): Agent {
       thinkingLevel: "off",
       tools: getTools(),
     },
-    transformContext: compactContext,
+    transformContext: (messages) => compactContext(messages, openrouterKey),
     getApiKey: async (provider: string) => {
       if (provider === "anthropic") {
         return (await getApiKey("anthropic")) ?? undefined;
@@ -239,7 +248,7 @@ function getTools(): AgentTool<any>[] {
 
 const ok = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
 
-// Max bytes returned by any single tool call.
+// Max chars returned by any single tool call.
 // Prevents one giant shell output or file read from blowing up context.
 const MAX_TOOL_OUTPUT_CHARS = 50_000;
 
