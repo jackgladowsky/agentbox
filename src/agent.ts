@@ -31,6 +31,10 @@ const COMPACTION_MODEL_ID = "claude-haiku-4-5";
 // Tool results (especially shell output) can be huge — we count everything.
 const MAX_CONTEXT_CHARS = 400_000;
 
+// Max chars of serialized transcript we'll send to haiku for summarization.
+// Haiku has a 200K token limit; ~800K chars is a safe ceiling.
+const MAX_TRANSCRIPT_CHARS = 800_000;
+
 /**
  * Marker prepended to compaction summary messages.
  * The system prompt instructs the agent to recognize this and keep moving.
@@ -118,6 +122,12 @@ async function summarizeWithHaiku(transcript: string): Promise<string> {
   const model = getModels("anthropic" as KnownProvider).find(m => m.id === COMPACTION_MODEL_ID);
   if (!model) throw new Error(`Compaction model not found: ${COMPACTION_MODEL_ID}`);
 
+  // Guard: truncate transcript so we don't blow up haiku's own context limit.
+  // Take the tail (most recent) since that's more useful than the beginning.
+  const safeTranscript = transcript.length > MAX_TRANSCRIPT_CHARS
+    ? `[...earlier history truncated...]\n\n${transcript.slice(-MAX_TRANSCRIPT_CHARS)}`
+    : transcript;
+
   const systemPrompt =
     "You are a conversation summarizer. Produce a concise but complete summary of the conversation below. " +
     "Preserve: key decisions made, important facts learned, tasks completed, current goals, and any unresolved questions. " +
@@ -125,7 +135,7 @@ async function summarizeWithHaiku(transcript: string): Promise<string> {
 
   const userMessage: UserMessage = {
     role: "user",
-    content: `Summarize this conversation:\n\n${transcript}`,
+    content: `Summarize this conversation:\n\n${safeTranscript}`,
     timestamp: Date.now(),
   };
 
@@ -138,7 +148,9 @@ async function summarizeWithHaiku(transcript: string): Promise<string> {
     }
   }
 
-  return summary.trim();
+  const trimmed = summary.trim();
+  if (!trimmed) throw new Error("Haiku returned empty summary");
+  return trimmed;
 }
 
 /**
@@ -153,6 +165,11 @@ async function summarizeWithHaiku(transcript: string): Promise<string> {
  *   [CONTEXT_COMPACTED ...]   (single summary message, that's it)
  *
  * Stored history is untouched — only what gets sent to the API changes.
+ *
+ * IMPORTANT: On any failure, we return [] (empty history) rather than a
+ * partial slice. A partial slice can itself exceed the limit, causing an
+ * infinite compaction loop. Empty history is safe — the agent just loses
+ * context but keeps running.
  */
 async function compactContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
   const charCount = countContextChars(messages);
@@ -164,10 +181,10 @@ async function compactContext(messages: AgentMessage[]): Promise<AgentMessage[]>
   try {
     summary = await summarizeWithHaiku(serializeMessages(messages));
   } catch (err: any) {
-    console.error(`[AgentBox] Compaction failed: ${err.message}`);
-    // Fallback: drop everything except the last message so the immediate
-    // request goes through. Better than crashing.
-    return messages.slice(-1);
+    console.error(`[AgentBox] Compaction failed: ${err.message} — clearing history to avoid loop`);
+    // Return empty array, NOT messages.slice(-1). A partial slice can still
+    // exceed the limit and cause an infinite compaction loop.
+    return [];
   }
 
   const summaryMessage: UserMessage = {
