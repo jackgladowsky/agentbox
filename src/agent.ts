@@ -2,7 +2,7 @@
  * AgentBox agent using pi-agent-core.
  * Provides tool execution, streaming, and state management.
  */
-import { Agent, type AgentTool } from "@mariozechner/pi-agent-core";
+import { Agent, type AgentTool, type AgentMessage } from "@mariozechner/pi-agent-core";
 import {
   getModel,
   getModels,
@@ -23,6 +23,37 @@ registerBuiltInApiProviders();
 
 export const DEFAULT_MODEL_ID = "claude-sonnet-4-6";
 
+// ── Context pruning ───────────────────────────────────────────────────────────
+
+// ~400K chars ≈ 100K tokens, leaving headroom for system prompt + output
+const MAX_CONTEXT_CHARS = 400_000;
+
+function countContextChars(messages: AgentMessage[]): number {
+  let total = 0;
+  for (const msg of messages as any[]) {
+    if (Array.isArray(msg.content)) {
+      for (const c of msg.content) {
+        if (typeof c.text === "string") total += c.text.length;
+        if (typeof c.thinking === "string") total += c.thinking.length;
+        if (typeof c.partialJson === "string") total += c.partialJson.length;
+      }
+    } else if (typeof msg.content === "string") {
+      total += msg.content.length;
+    }
+  }
+  return total;
+}
+
+async function pruneContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
+  if (countContextChars(messages) <= MAX_CONTEXT_CHARS) return messages;
+  const result = [...messages];
+  while (result.length > 6 && countContextChars(result) > MAX_CONTEXT_CHARS) {
+    result.shift();
+  }
+  console.log(`[AgentBox] Context pruned to ${result.length} messages`);
+  return result;
+}
+
 export function resolveModel(modelId?: string) {
   const id = modelId ?? DEFAULT_MODEL_ID;
   const model = getModels("anthropic" as KnownProvider).find(m => m.id === id);
@@ -41,6 +72,7 @@ export function createAgent(systemPrompt: string, modelId?: string): Agent {
       thinkingLevel: "off",
       tools: getTools(),
     },
+    transformContext: pruneContext,
     getApiKey: async (provider: string) => {
       if (provider === "anthropic") {
         return (await getApiKey("anthropic")) ?? undefined;
