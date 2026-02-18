@@ -1,0 +1,18 @@
+use_default_settings: true
+
+server:
+  secret_key: "agentbox-rex-searxng-2026"
+  limiter: false
+  image_proxy: false
+  forwarded_allow_ips: "*"
+
+search:
+  safe_search: 0
+  autocomplete: ""
+  default_lang: "en"
+  formats:
+    - html
+    - json
+
+ui:
+  static_use_hash: true
