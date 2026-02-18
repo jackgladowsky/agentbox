@@ -7,7 +7,7 @@
  * Features:
  * - Streaming responses with live message edits (feels like typing)
  * - File/image/voice downloads from Telegram → agent (saves to /tmp)
- * - /clear, /model, /thinking, /status, /update, /help commands
+ * - /clear, /reset, /new, /model, /thinking, /status, /update, /help commands
  */
 
 import { Bot, Context } from "grammy";
@@ -100,7 +100,8 @@ export async function startTelegram(): Promise<void> {
     await ctx.reply(
       `${displayName} online. Send me anything.\n\n` +
       `Commands:\n` +
-      `/clear — clear conversation history\n` +
+      `/reset — clear history and start fresh (also: /new)\n` +
+      `/clear — same as /reset\n` +
       `/status — show model + message count\n` +
       `/model <id> — switch model\n` +
       `/thinking — toggle extended thinking\n` +
@@ -111,7 +112,8 @@ export async function startTelegram(): Promise<void> {
 
   bot.command("help", async (ctx) => {
     await ctx.reply(
-      `/clear — clear conversation history\n` +
+      `/reset — clear history and start fresh (also: /new)\n` +
+      `/clear — same as /reset\n` +
       `/status — show model + message count\n` +
       `/model <id> — switch model (e.g. /model claude-opus-4-5)\n` +
       `/thinking — toggle extended thinking\n` +
@@ -120,10 +122,15 @@ export async function startTelegram(): Promise<void> {
     );
   });
 
-  bot.command("clear", async (ctx) => {
+  // Shared reset handler — clears history, replies immediately, no restart needed
+  async function handleReset(ctx: Context) {
     agentbox.clearMessages();
-    await ctx.reply("✓ Conversation cleared.");
-  });
+    await ctx.reply("✓ History cleared. Fresh session started.");
+  }
+
+  bot.command("clear", handleReset);
+  bot.command("reset", handleReset);
+  bot.command("new", handleReset);
 
   bot.command("status", async (ctx) => {
     const state = agentbox.instance.state;
