@@ -1,0 +1,52 @@
+{
+  "name": "git",
+  "description": "Git — version control, commits, branches, remotes",
+  "version": "1.0.0",
+
+  "cli": {
+    "type": "prebuilt",
+    "binary": "git",
+    "install": {
+      "method": "apt",
+      "command": "sudo apt install git"
+    }
+  },
+
+  "auth": {
+    "required": false,
+    "method": "ssh_key",
+    "env_vars": [],
+    "notes": "SSH key or HTTPS credentials for remote operations"
+  },
+
+  "depends_on": [],
+
+  "commands": {
+    "commit": {
+      "description": "Stage all and commit",
+      "usage": "git add -A && git commit -m <message>"
+    },
+    "push": {
+      "description": "Push to remote",
+      "usage": "git push"
+    },
+    "pull": {
+      "description": "Pull from remote",
+      "usage": "git pull"
+    },
+    "status": {
+      "description": "Show working tree status",
+      "usage": "git status"
+    },
+    "log": {
+      "description": "Show recent commits",
+      "usage": "git log --oneline -20"
+    },
+    "branch": {
+      "description": "Create or switch branch",
+      "usage": "git checkout -b <branch>"
+    }
+  },
+
+  "status": "installed"
+}

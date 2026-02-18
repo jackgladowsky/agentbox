@@ -1,0 +1,48 @@
+{
+  "name": "restic",
+  "description": "Restic — fast, encrypted, deduplicated backups",
+  "version": "1.0.0",
+
+  "cli": {
+    "type": "prebuilt",
+    "binary": "restic",
+    "install": {
+      "method": "apt",
+      "command": "sudo apt install restic"
+    }
+  },
+
+  "auth": {
+    "required": true,
+    "method": "password",
+    "env_vars": ["RESTIC_PASSWORD", "RESTIC_REPOSITORY"],
+    "notes": "RESTIC_REPOSITORY = path or remote URL, RESTIC_PASSWORD = encryption key"
+  },
+
+  "depends_on": [],
+
+  "commands": {
+    "init": {
+      "description": "Initialize a new repository",
+      "usage": "restic init"
+    },
+    "backup": {
+      "description": "Run a backup",
+      "usage": "restic backup <path>"
+    },
+    "snapshots": {
+      "description": "List snapshots",
+      "usage": "restic snapshots"
+    },
+    "restore": {
+      "description": "Restore a snapshot",
+      "usage": "restic restore latest --target <path>"
+    },
+    "forget": {
+      "description": "Prune old snapshots",
+      "usage": "restic forget --keep-daily 7 --keep-weekly 4 --prune"
+    }
+  },
+
+  "status": "not_installed"
+}

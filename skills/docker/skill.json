@@ -1,0 +1,52 @@
+{
+  "name": "docker",
+  "description": "Docker CLI — build, run, and manage containers",
+  "version": "1.0.0",
+
+  "cli": {
+    "type": "prebuilt",
+    "binary": "docker",
+    "install": {
+      "method": "apt",
+      "command": "sudo apt install docker.io"
+    }
+  },
+
+  "auth": {
+    "required": false,
+    "method": "docker_login",
+    "env_vars": ["DOCKER_USERNAME", "DOCKER_PASSWORD"],
+    "notes": "Auth only needed for push/pull from private registries"
+  },
+
+  "depends_on": [],
+
+  "commands": {
+    "build": {
+      "description": "Build an image",
+      "usage": "docker build -t <name> ."
+    },
+    "run": {
+      "description": "Run a container",
+      "usage": "docker run -d --name <name> <image>"
+    },
+    "ps": {
+      "description": "List running containers",
+      "usage": "docker ps"
+    },
+    "logs": {
+      "description": "View container logs",
+      "usage": "docker logs -f <container>"
+    },
+    "compose_up": {
+      "description": "Start docker-compose stack",
+      "usage": "docker compose up -d"
+    },
+    "compose_down": {
+      "description": "Stop docker-compose stack",
+      "usage": "docker compose down"
+    }
+  },
+
+  "status": "installed"
+}

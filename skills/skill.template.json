@@ -1,0 +1,32 @@
+{
+  "name": "",
+  "description": "",
+  "version": "1.0.0",
+
+  "cli": {
+    "type": "prebuilt",
+    "binary": "",
+    "install": {
+      "method": "",
+      "command": ""
+    }
+  },
+
+  "auth": {
+    "required": false,
+    "method": "",
+    "env_vars": [],
+    "notes": ""
+  },
+
+  "depends_on": [],
+
+  "commands": {
+    "example_command": {
+      "description": "",
+      "usage": ""
+    }
+  },
+
+  "status": "not_installed"
+}
