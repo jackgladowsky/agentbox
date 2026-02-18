@@ -29,8 +29,6 @@ const COMPACTION_MODEL_ID = "claude-haiku-4-5";
 
 // Trigger compaction when history exceeds ~400K chars (~100K tokens)
 const MAX_CONTEXT_CHARS = 400_000;
-// Keep this many recent messages raw after compaction for recency/detail
-const RECENT_MESSAGES_TO_KEEP = 10;
 
 /**
  * Marker prepended to compaction summary messages.
@@ -92,7 +90,7 @@ function serializeMessages(messages: AgentMessage[]): string {
 }
 
 /**
- * Call haiku to summarize the old portion of conversation history.
+ * Call haiku to summarize the full conversation history.
  */
 async function summarizeWithHaiku(transcript: string): Promise<string> {
   const apiKey = (await getApiKey("anthropic")) ?? undefined;
@@ -123,8 +121,13 @@ async function summarizeWithHaiku(transcript: string): Promise<string> {
 }
 
 /**
- * When context exceeds the limit, summarize all but the most recent messages
- * using Haiku, then return: [summary user message, ...recent raw messages].
+ * When context exceeds the limit, summarize the entire history with Haiku
+ * and return a single summary message — clean slate with memory intact.
+ *
+ * Result after compaction:
+ *   [system prompt]  (unchanged, handled by agent)
+ *   [CONTEXT_COMPACTED summary message]
+ *
  * The stored agent history is untouched — only what gets sent to the API changes.
  */
 async function compactContext(messages: AgentMessage[]): Promise<AgentMessage[]> {
@@ -132,27 +135,25 @@ async function compactContext(messages: AgentMessage[]): Promise<AgentMessage[]>
 
   console.log(`[AgentBox] Context limit hit (${countContextChars(messages)} chars) — compacting with ${COMPACTION_MODEL_ID}...`);
 
-  const splitAt = Math.max(0, messages.length - RECENT_MESSAGES_TO_KEEP);
-  const toSummarize = messages.slice(0, splitAt);
-  const recent = messages.slice(splitAt);
-
   let summary: string;
   try {
-    summary = await summarizeWithHaiku(serializeMessages(toSummarize));
+    summary = await summarizeWithHaiku(serializeMessages(messages));
   } catch (err: any) {
-    console.error(`[AgentBox] Compaction failed, falling back to trim: ${err.message}`);
-    return recent;
+    console.error(`[AgentBox] Compaction failed: ${err.message}`);
+    // Fallback: drop everything except the last message so at least the
+    // immediate request goes through
+    return messages.slice(-1);
   }
 
   const summaryMessage: UserMessage = {
     role: "user",
     content: `${COMPACTION_CODE}\n\n${summary}`,
-    timestamp: toSummarize.length > 0 ? (toSummarize[0] as any).timestamp ?? Date.now() : Date.now(),
+    timestamp: Date.now(),
   };
 
-  console.log(`[AgentBox] Compacted ${toSummarize.length} messages into summary (${summary.length} chars). Keeping ${recent.length} recent messages.`);
+  console.log(`[AgentBox] Compacted ${messages.length} messages into summary (${summary.length} chars).`);
 
-  return [summaryMessage, ...recent];
+  return [summaryMessage];
 }
 
 export function resolveModel(modelId?: string) {
