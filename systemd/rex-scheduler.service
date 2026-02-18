@@ -1,0 +1,18 @@
+[Unit]
+Description=Rex Scheduler — Autonomous cron daemon for AgentBox
+After=network-online.target rex.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/path/to/agentbox
+ExecStart=/path/to/node /path/to/agentbox/node_modules/.bin/tsx src/scheduler.ts
+Restart=on-failure
+RestartSec=30
+StandardOutput=journal
+StandardError=journal
+Environment=NODE_ENV=production
+Environment=AGENT=rex
+
+[Install]
+WantedBy=default.target
