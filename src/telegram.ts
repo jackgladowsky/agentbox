@@ -1,8 +1,9 @@
 /**
- * Telegram entrypoint — starts Rex + Telegram connection.
+ * Telegram entrypoint — starts AgentBox with Telegram connection.
+ * Agent is selected via AGENT env var (default: "agent").
  */
 
-import { rex } from "./rex.js";
+import { agentbox } from "./agentbox.js";
 import { hasCredentials, login } from "./auth.js";
 import { startTelegram } from "./connections/telegram.js";
 
@@ -14,7 +15,7 @@ async function main() {
     if (!ok) { console.error("Auth failed."); process.exit(1); }
   }
 
-  await rex.init();
+  await agentbox.init();
   await startTelegram();
 }
 

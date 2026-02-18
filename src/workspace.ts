@@ -1,25 +1,17 @@
-import { readFile, access } from "fs/promises";
+import { readFile, access, readdir } from "fs/promises";
 import { join } from "path";
 import { hostname, platform, arch, userInfo } from "os";
-
-// Files to load as context (in order of priority)
-const CONTEXT_FILES = [
-  "SOUL.md",
-  "IDENTITY.md", 
-  "USER.md",
-  "TOOLS.md",
-  "AGENTS.md",
-];
+import { loadSoul, notesDir, getAgentName, loadAgentConfig } from "./config.js";
 
 export interface WorkspaceContext {
   systemPrompt: string;
-  files: string[];
+  agentName: string;
 }
 
 /**
- * Build the core preamble that establishes what AgentBox is
+ * Build the core preamble — establishes what AgentBox is and the agent's environment.
  */
-function buildPreamble(): string {
+function buildPreamble(agentName: string): string {
   const user = userInfo().username;
   const host = hostname();
   const plat = platform();
@@ -40,6 +32,7 @@ You don't have to.
 
 ## Your Environment
 
+- **Agent:** ${agentName}
 - **Host:** ${host}
 - **Platform:** ${plat} (${architecture})
 - **User:** ${user}
@@ -82,38 +75,47 @@ More can be added. You can even help build them.
 }
 
 /**
- * Load workspace context files and build system prompt
+ * Load all markdown notes from the agent's notes/ directory.
  */
-export async function loadWorkspaceContext(workspaceDir: string): Promise<WorkspaceContext> {
-  const loaded: { name: string; content: string }[] = [];
+async function loadNotes(name: string): Promise<{ filename: string; content: string }[]> {
+  const dir = notesDir(name);
+  try {
+    const entries = await readdir(dir);
+    const notes: { filename: string; content: string }[] = [];
+    for (const entry of entries.filter(e => e.endsWith(".md"))) {
+      try {
+        const content = await readFile(join(dir, entry), "utf-8");
+        if (content.trim()) notes.push({ filename: entry, content: content.trim() });
+      } catch { /* skip unreadable */ }
+    }
+    return notes;
+  } catch {
+    return []; // notes/ doesn't exist yet, that's fine
+  }
+}
 
-  for (const file of CONTEXT_FILES) {
-    const filePath = join(workspaceDir, file);
-    try {
-      await access(filePath);
-      const content = await readFile(filePath, "utf-8");
-      if (content.trim()) {
-        loaded.push({ name: file, content: content.trim() });
-      }
-    } catch {
-      // File doesn't exist, skip
+/**
+ * Build the full system prompt for the agent.
+ */
+export async function loadWorkspaceContext(): Promise<WorkspaceContext> {
+  const agentName = getAgentName();
+
+  let systemPrompt = buildPreamble(agentName);
+
+  // Load SOUL.md from agent dir
+  const soul = await loadSoul(agentName);
+  if (soul.trim()) {
+    systemPrompt += `# Identity & Configuration\n\n## SOUL.md\n${soul.trim()}\n\n`;
+  }
+
+  // Load notes
+  const notes = await loadNotes(agentName);
+  if (notes.length > 0) {
+    systemPrompt += `# Agent Notes\n\n`;
+    for (const { filename, content } of notes) {
+      systemPrompt += `## ${filename}\n${content}\n\n`;
     }
   }
 
-  // Start with the preamble
-  let systemPrompt = buildPreamble();
-
-  // Add workspace files if any exist
-  if (loaded.length > 0) {
-    systemPrompt += `# Identity & Configuration\n\n`;
-    
-    for (const { name, content } of loaded) {
-      systemPrompt += `## ${name}\n${content}\n\n`;
-    }
-  }
-
-  return {
-    systemPrompt,
-    files: loaded.map((f) => f.name),
-  };
+  return { systemPrompt, agentName };
 }

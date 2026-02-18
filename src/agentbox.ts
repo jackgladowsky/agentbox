@@ -1,18 +1,14 @@
 /**
- * Rex — the singleton agent instance.
+ * AgentBox — the singleton agent instance.
  *
  * All connections (Telegram, TUI, etc.) talk to this one agent.
- * Conversation history is shared and persistent across all connections.
+ * Conversation history is shared across all connections.
  */
 
 import { type Agent, type AgentEvent } from "@mariozechner/pi-agent-core";
-import { createAgent, DEFAULT_MODEL } from "./agent.js";
+import { createAgent } from "./agent.js";
 import { loadWorkspaceContext } from "./workspace.js";
-import { join, dirname } from "path";
-import { fileURLToPath } from "url";
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const AGENTBOX_DIR = join(__dirname, "..");
+import { loadAgentConfig } from "./config.js";
 
 export type MessageSource = {
   /** Unique ID for routing replies back — e.g. telegram:123456, tui:local */
@@ -21,23 +17,30 @@ export type MessageSource = {
   label: string;
 };
 
-export type RexResponseCallback = (event: AgentEvent, source: MessageSource) => void;
+export type AgentResponseCallback = (event: AgentEvent, source: MessageSource) => void;
 
-class Rex {
+class AgentBox {
   private agent: Agent | null = null;
-  private listeners = new Map<string, RexResponseCallback>();
+  private listeners = new Map<string, AgentResponseCallback>();
   private queue: Array<{ content: string; source: MessageSource }> = [];
   private busy = false;
+  private _name = "agent";
 
   async init(): Promise<void> {
     if (this.agent) return;
-    const context = await loadWorkspaceContext(AGENTBOX_DIR);
-    this.agent = createAgent(context.systemPrompt);
-    console.log(`[Rex] Initialized — ${this.agent.state.model.id}`);
+    const { systemPrompt, agentName } = await loadWorkspaceContext();
+    const config = await loadAgentConfig(agentName);
+    this._name = config.name ?? agentName;
+    this.agent = createAgent(systemPrompt, config.model);
+    console.log(`[AgentBox] ${this._name} initialized — ${this.agent.state.model.id}`);
+  }
+
+  get name(): string {
+    return this._name;
   }
 
   get instance(): Agent {
-    if (!this.agent) throw new Error("Rex not initialized — call rex.init() first");
+    if (!this.agent) throw new Error("AgentBox not initialized — call agentbox.init() first");
     return this.agent;
   }
 
@@ -45,19 +48,13 @@ class Rex {
     return this.agent?.state.messages.length ?? 0;
   }
 
-  /**
-   * Subscribe to all agent events, tagged with the originating source.
-   * Returns an unsubscribe function.
-   */
-  subscribe(id: string, callback: RexResponseCallback): () => void {
+  /** Subscribe to all agent events tagged with originating source. Returns unsubscribe fn. */
+  subscribe(id: string, callback: AgentResponseCallback): () => void {
     this.listeners.set(id, callback);
     return () => this.listeners.delete(id);
   }
 
-  /**
-   * Send a message to Rex from a given source.
-   * Queues if Rex is currently busy so connections don't clobber each other.
-   */
+  /** Send a message to the agent. Queues if busy so connections don't clobber each other. */
   async prompt(content: string, source: MessageSource): Promise<void> {
     this.queue.push({ content, source });
     if (!this.busy) await this._drainQueue();
@@ -77,9 +74,7 @@ class Rex {
     const agent = this.instance;
     await new Promise<void>((resolve, reject) => {
       const unsubscribe = agent.subscribe((event: AgentEvent) => {
-        for (const cb of this.listeners.values()) {
-          cb(event, source);
-        }
+        for (const cb of this.listeners.values()) cb(event, source);
         if (event.type === "agent_end") {
           unsubscribe();
           resolve();
@@ -92,22 +87,11 @@ class Rex {
     });
   }
 
-  abort(): void {
-    this.agent?.abort();
-  }
-
-  clearMessages(): void {
-    this.agent?.clearMessages();
-  }
-
-  setModel(modelId: string): void {
-    this.agent?.setModel({ ...DEFAULT_MODEL, id: modelId });
-  }
-
-  setThinkingLevel(level: "off" | "low" | "medium" | "high"): void {
-    this.agent?.setThinkingLevel(level);
-  }
+  abort(): void { this.agent?.abort(); }
+  clearMessages(): void { this.agent?.clearMessages(); }
+  setModel(modelId: string): void { this.agent?.setModel({ ...this.instance.state.model, id: modelId }); }
+  setThinkingLevel(level: "off" | "low" | "medium" | "high"): void { this.agent?.setThinkingLevel(level); }
 }
 
 // Singleton export
-export const rex = new Rex();
+export const agentbox = new AgentBox();

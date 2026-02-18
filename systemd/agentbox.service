@@ -1,5 +1,5 @@
 [Unit]
-Description=Rex — Telegram Agent
+Description=AgentBox — Telegram Agent
 After=network-online.target
 Wants=network-online.target
 
@@ -12,6 +12,7 @@ RestartSec=10
 StandardOutput=journal
 StandardError=journal
 Environment=NODE_ENV=production
+Environment=AGENT=myagent
 
 [Install]
 WantedBy=default.target

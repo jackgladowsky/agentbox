@@ -3,10 +3,12 @@
  * Provides tool execution, streaming, and state management.
  */
 import { Agent, type AgentTool } from "@mariozechner/pi-agent-core";
-import { 
-  getModel, 
-  registerBuiltInApiProviders, 
+import {
+  getModel,
+  getModels,
+  registerBuiltInApiProviders,
   Type,
+  type KnownProvider,
 } from "@mariozechner/pi-ai";
 import { getApiKey } from "./auth.js";
 import { exec } from "child_process";
@@ -19,21 +21,26 @@ const execAsync = promisify(exec);
 // Register all built-in providers (Anthropic, OpenAI, Google, etc.)
 registerBuiltInApiProviders();
 
-// Default model - upgraded to latest Claude Sonnet 4.6 with reasoning
-export const DEFAULT_MODEL = getModel("anthropic", "claude-sonnet-4-6");
+export const DEFAULT_MODEL_ID = "claude-sonnet-4-6";
+
+export function resolveModel(modelId?: string) {
+  const id = modelId ?? DEFAULT_MODEL_ID;
+  const model = getModels("anthropic" as KnownProvider).find(m => m.id === id);
+  if (!model) throw new Error(`Unknown model: ${id}`);
+  return model;
+}
 
 /**
- * Create the AgentBox agent with tools
+ * Create an AgentBox agent with the standard tool set.
  */
-export function createAgent(systemPrompt: string): Agent {
+export function createAgent(systemPrompt: string, modelId?: string): Agent {
   const agent = new Agent({
     initialState: {
       systemPrompt,
-      model: DEFAULT_MODEL,
+      model: resolveModel(modelId),
       thinkingLevel: "off",
       tools: getTools(),
     },
-    // Resolve API key dynamically (handles token refresh)
     getApiKey: async (provider: string) => {
       if (provider === "anthropic") {
         return (await getApiKey("anthropic")) ?? undefined;
@@ -45,19 +52,13 @@ export function createAgent(systemPrompt: string): Agent {
   return agent;
 }
 
-/**
- * Built-in tools for AgentBox
- */
+// ── Tools ─────────────────────────────────────────────────────────────────────
+
 function getTools(): AgentTool<any>[] {
-  return [
-    shellTool,
-    readFileTool,
-    writeFileTool,
-    listDirTool,
-  ];
+  return [shellTool, readFileTool, writeFileTool, listDirTool];
 }
 
-// ============== TOOLS ==============
+const ok = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
 
 const ShellParams = Type.Object({
   command: Type.String({ description: "Shell command to execute" }),
@@ -70,27 +71,17 @@ const shellTool: AgentTool<typeof ShellParams> = {
   label: "Execute Shell Command",
   description: "Execute a shell command and return stdout/stderr. Use for system operations, running scripts, etc.",
   parameters: ShellParams,
-  execute: async (_toolCallId, params) => {
+  execute: async (_id, params) => {
     const { command, workdir, timeout = 30000 } = params;
-    
     try {
       const { stdout, stderr } = await execAsync(command, {
         cwd: workdir,
         timeout,
-        maxBuffer: 10 * 1024 * 1024, // 10MB
+        maxBuffer: 10 * 1024 * 1024,
       });
-      
-      const output = [stdout, stderr].filter(Boolean).join("\n---stderr---\n");
-      return {
-        content: [{ type: "text", text: output || "(no output)" }],
-        details: { exitCode: 0 },
-      };
+      return ok([stdout, stderr].filter(Boolean).join("\n---stderr---\n") || "(no output)");
     } catch (err: any) {
-      const output = [err.stdout, err.stderr, err.message].filter(Boolean).join("\n");
-      return {
-        content: [{ type: "text", text: `Error: ${output}` }],
-        details: { exitCode: err.code ?? 1 },
-      };
+      return ok(`Error: ${[err.stdout, err.stderr, err.message].filter(Boolean).join("\n")}`);
     }
   },
 };
@@ -105,20 +96,12 @@ const readFileTool: AgentTool<typeof ReadFileParams> = {
   label: "Read File",
   description: "Read the contents of a file.",
   parameters: ReadFileParams,
-  execute: async (_toolCallId, params) => {
+  execute: async (_id, params) => {
     const { path, encoding = "utf-8" } = params;
-    
     try {
-      const content = await readFile(path, encoding as BufferEncoding);
-      return {
-        content: [{ type: "text", text: content }],
-        details: { path, size: content.length },
-      };
+      return ok(await readFile(path, encoding as BufferEncoding));
     } catch (err: any) {
-      return {
-        content: [{ type: "text", text: `Error reading file: ${err.message}` }],
-        details: { error: err.message },
-      };
+      return ok(`Error reading file: ${err.message}`);
     }
   },
 };
@@ -134,23 +117,14 @@ const writeFileTool: AgentTool<typeof WriteFileParams> = {
   label: "Write File",
   description: "Write content to a file. Creates the file if it doesn't exist.",
   parameters: WriteFileParams,
-  execute: async (_toolCallId, params) => {
+  execute: async (_id, params) => {
     const { path, content, createDirs = true } = params;
-    
     try {
-      if (createDirs) {
-        await mkdir(dirname(path), { recursive: true });
-      }
+      if (createDirs) await mkdir(dirname(path), { recursive: true });
       await writeFile(path, content, "utf-8");
-      return {
-        content: [{ type: "text", text: `Wrote ${content.length} bytes to ${path}` }],
-        details: { path, size: content.length },
-      };
+      return ok(`Wrote ${content.length} bytes to ${path}`);
     } catch (err: any) {
-      return {
-        content: [{ type: "text", text: `Error writing file: ${err.message}` }],
-        details: { error: err.message },
-      };
+      return ok(`Error writing file: ${err.message}`);
     }
   },
 };
@@ -165,20 +139,12 @@ const listDirTool: AgentTool<typeof ListDirParams> = {
   label: "List Directory",
   description: "List files and directories in a path.",
   parameters: ListDirParams,
-  execute: async (_toolCallId, params) => {
+  execute: async (_id, params) => {
     const { path, recursive = false } = params;
-    
     try {
-      const entries = await listDirectory(path, recursive);
-      return {
-        content: [{ type: "text", text: entries.join("\n") || "(empty)" }],
-        details: { path, count: entries.length },
-      };
+      return ok((await listDirectory(path, recursive)).join("\n") || "(empty)");
     } catch (err: any) {
-      return {
-        content: [{ type: "text", text: `Error listing directory: ${err.message}` }],
-        details: { error: err.message },
-      };
+      return ok(`Error listing directory: ${err.message}`);
     }
   },
 };
@@ -186,22 +152,16 @@ const listDirTool: AgentTool<typeof ListDirParams> = {
 async function listDirectory(dir: string, recursive: boolean, prefix = ""): Promise<string[]> {
   const entries = await readdir(dir);
   const results: string[] = [];
-  
   for (const entry of entries) {
     const fullPath = join(dir, entry);
     const stats = await stat(fullPath);
     const displayPath = prefix + entry;
-    
     if (stats.isDirectory()) {
       results.push(displayPath + "/");
-      if (recursive) {
-        const subEntries = await listDirectory(fullPath, true, displayPath + "/");
-        results.push(...subEntries);
-      }
+      if (recursive) results.push(...await listDirectory(fullPath, true, displayPath + "/"));
     } else {
       results.push(displayPath);
     }
   }
-  
   return results;
 }

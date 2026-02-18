@@ -1,274 +1,159 @@
 /**
- * TUI connection for Rex.
- *
- * Terminal UI adapter — Ink-based chat interface.
- * Talks to the Rex singleton, same shared conversation as Discord.
+ * Terminal UI connection for AgentBox.
+ * Uses Ink for a clean interactive terminal experience.
  */
 
-import React, { useState, useEffect, useCallback, useRef, useMemo } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { render, Box, Text, useInput, useApp } from "ink";
 import TextInput from "ink-text-input";
-import { type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
-import { type TextContent, type ToolCall } from "@mariozechner/pi-ai";
-import { rex, type MessageSource } from "../rex.js";
+import { agentbox, type MessageSource } from "../agentbox.js";
+import { type AgentEvent } from "@mariozechner/pi-agent-core";
+import { type TextContent } from "@mariozechner/pi-ai";
 
-const TUI_SOURCE: MessageSource = {
-  id: "tui:local",
-  label: "TUI (local terminal)",
-};
+type AppState = "idle" | "responding";
 
-// How many past messages to show before truncating
-const MAX_VISIBLE_MESSAGES = 10;
-
-interface ChatHistory {
-  messages: AgentMessage[];
-  streamingText: string;
-  isStreaming: boolean;
+interface Message {
+  role: "user" | "assistant" | "system";
+  content: string;
 }
 
-function MessageView({ msg }: { msg: AgentMessage }) {
-  if (msg.role === "user") {
-    const text =
-      typeof msg.content === "string"
-        ? msg.content
-        : msg.content
-            .filter((c): c is TextContent => c.type === "text")
-            .map(c => c.text)
-            .join("");
-    return (
-      <Box marginY={0}>
-        <Text color="cyan" bold>you&gt; </Text>
-        <Text wrap="wrap">{text}</Text>
-      </Box>
-    );
-  }
+const TUI_SOURCE: MessageSource = { id: "tui:local", label: "TUI" };
 
-  if (msg.role === "assistant") {
-    const textParts: string[] = [];
-    const toolCalls: ToolCall[] = [];
-
-    for (const part of msg.content) {
-      if (part.type === "text") textParts.push(part.text);
-      else if (part.type === "toolCall") toolCalls.push(part);
-    }
-
-    return (
-      <Box flexDirection="column" marginY={0}>
-        {textParts.length > 0 && (
-          <Box>
-            <Text color="green" bold>rex&gt; </Text>
-            <Text wrap="wrap">{textParts.join("")}</Text>
-          </Box>
-        )}
-        {toolCalls.map((tc, j) => (
-          <Box key={j} marginLeft={2}>
-            <Text color="yellow" bold>[{tc.name}] </Text>
-            <Text color="gray">{JSON.stringify(tc.arguments).slice(0, 100)}</Text>
-          </Box>
-        ))}
-      </Box>
-    );
-  }
-
-  if (msg.role === "toolResult") {
-    const text = msg.content
-      .filter((c): c is TextContent => c.type === "text")
-      .map(c => c.text)
-      .join("");
-    const preview = text.length > 200 ? text.slice(0, 200) + "…" : text;
-    return (
-      <Box marginLeft={2} marginY={0}>
-        <Text color={msg.isError ? "red" : "gray"}>└─ {preview}</Text>
-      </Box>
-    );
-  }
-
-  return null;
-}
-
-function App() {
+function AgentBoxTUI() {
   const { exit } = useApp();
-  const [appState, setAppState] = useState<"ready" | "responding" | "error">("ready");
+  const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState("");
-  const [notice, setNotice] = useState<string | null>(null);
-  const [history, setHistory] = useState<ChatHistory>({
-    messages: [],
-    streamingText: "",
-    isStreaming: false,
+  const [appState, setAppState] = useState<AppState>("idle");
+  const [streamBuffer, setStreamBuffer] = useState("");
+
+  useInput((inputChar, key) => {
+    if (key.ctrl && inputChar === "c") {
+      if (appState === "responding") {
+        agentbox.abort();
+      } else {
+        exit();
+      }
+    }
   });
 
-  const streamingTextRef = useRef("");
-  const updateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const handleSubmit = async (value: string) => {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    setInput("");
 
-  useEffect(() => {
-    const unsubscribe = rex.subscribe("tui", (event: AgentEvent, source: MessageSource) => {
-      // Show all events in TUI regardless of source — you want to see what's happening
-      switch (event.type) {
-        case "agent_start":
-          setAppState("responding");
-          streamingTextRef.current = "";
-          setHistory(prev => ({ ...prev, streamingText: "", isStreaming: true }));
-          // Show where the message came from if not local
-          if (source.id !== TUI_SOURCE.id) {
-            streamingTextRef.current = `[via ${source.label}] `;
-          }
-          break;
+    // Commands
+    if (trimmed === "/clear") {
+      agentbox.clearMessages();
+      setMessages([]);
+      return;
+    }
+    if (trimmed.startsWith("/model ")) {
+      const modelId = trimmed.slice(7).trim();
+      agentbox.setModel(modelId);
+      setMessages(prev => [...prev, { role: "system", content: `✓ Switched to ${modelId}` }]);
+      return;
+    }
+    if (trimmed === "/thinking on") { agentbox.setThinkingLevel("medium"); setInput(""); return; }
+    if (trimmed === "/thinking off") { agentbox.setThinkingLevel("off"); setInput(""); return; }
+    if (trimmed === "/status") {
+      const state = agentbox.instance.state;
+      setMessages(prev => [...prev, {
+        role: "system",
+        content: `Agent: ${agentbox.name}\nModel: ${state.model.id}\nMessages: ${agentbox.messageCount}\nThinking: ${state.thinkingLevel ?? "off"}`
+      }]);
+      return;
+    }
 
-        case "message_update":
-          if (event.message.role === "assistant") {
-            const text = event.message.content
-              .filter((c): c is TextContent => c.type === "text")
-              .map(c => c.text)
-              .join("");
-            streamingTextRef.current = text;
+    setMessages(prev => [...prev, { role: "user", content: trimmed }]);
+    setAppState("responding");
+    setStreamBuffer("");
 
-            if (updateTimeoutRef.current) clearTimeout(updateTimeoutRef.current);
-            updateTimeoutRef.current = setTimeout(() => {
-              setHistory(prev => ({ ...prev, streamingText: streamingTextRef.current }));
-            }, 80);
-          }
-          break;
+    const unsubscribe = agentbox.subscribe("tui", (event: AgentEvent) => {
+      if (event.type === "message_update" && event.message.role === "assistant") {
+        const text = event.message.content
+          .filter((c): c is TextContent => c.type === "text")
+          .map(c => c.text)
+          .join("");
+        setStreamBuffer(text);
+      }
 
-        case "agent_end":
-          if (updateTimeoutRef.current) clearTimeout(updateTimeoutRef.current);
-          setHistory({
-            messages: [...event.messages],
-            streamingText: "",
-            isStreaming: false,
-          });
-          setAppState("ready");
-          break;
-
-        case "tool_execution_start":
-          streamingTextRef.current += `\n[${event.toolName}] running...`;
-          setHistory(prev => ({ ...prev, streamingText: streamingTextRef.current }));
-          break;
+      if (event.type === "agent_end") {
+        unsubscribe();
+        const lastAssistant = [...event.messages].reverse().find(m => (m as any).role === "assistant");
+        let finalText = "";
+        if (lastAssistant) {
+          finalText = (lastAssistant as any).content
+            .filter((c: any): c is TextContent => c.type === "text")
+            .map((c: any) => c.text)
+            .join("")
+            .trim();
+        }
+        setStreamBuffer("");
+        setMessages(prev => [...prev, { role: "assistant", content: finalText || "(no response)" }]);
+        setAppState("idle");
       }
     });
 
-    return () => {
+    agentbox.prompt(trimmed, TUI_SOURCE).catch(err => {
       unsubscribe();
-      if (updateTimeoutRef.current) clearTimeout(updateTimeoutRef.current);
-    };
-  }, []);
+      setMessages(prev => [...prev, { role: "system", content: `Error: ${err.message}` }]);
+      setAppState("idle");
+    });
+  };
 
-  const handleSubmit = useCallback(async (value: string) => {
-    const trimmed = value.trim();
-    if (!trimmed) return;
-
-    setNotice(null);
-
-    if (trimmed === "/exit" || trimmed === "/quit") { exit(); return; }
-
-    if (trimmed === "/clear") {
-      rex.clearMessages();
-      setHistory({ messages: [], streamingText: "", isStreaming: false });
-      setInput("");
-      return;
-    }
-
-    if (trimmed.startsWith("/model ")) {
-      const modelId = trimmed.slice(7).trim();
-      rex.setModel(modelId);
-      setNotice(`Switched to ${modelId}`);
-      setInput("");
-      return;
-    }
-
-    if (trimmed === "/thinking on") { rex.setThinkingLevel("medium"); setInput(""); return; }
-    if (trimmed === "/thinking off") { rex.setThinkingLevel("off"); setInput(""); return; }
-
-    if (trimmed === "/help") {
-      setNotice([
-        "/model <id>      switch model",
-        "/thinking on|off toggle thinking",
-        "/clear           clear history",
-        "/exit            quit",
-      ].join("\n"));
-      setInput("");
-      return;
-    }
-
-    setInput("");
-    try {
-      await rex.prompt(trimmed, TUI_SOURCE);
-    } catch (err) {
-      setNotice(String(err));
-      setAppState("error");
-    }
-  }, [exit]);
-
-  useInput((_, key) => {
-    if (key.ctrl && key.return) {
-      if (appState === "responding") rex.abort();
-      else exit();
-    }
-  });
-
-  const visibleMessages = useMemo(() => {
-    const msgs = history.messages;
-    return msgs.length > MAX_VISIBLE_MESSAGES
-      ? msgs.slice(msgs.length - MAX_VISIBLE_MESSAGES)
-      : msgs;
-  }, [history.messages]);
-
-  const truncated = history.messages.length > MAX_VISIBLE_MESSAGES;
-
-  const statusLine = useMemo(() => {
-    const modelId = rex.instance.state.model.id;
-    const total = history.messages.length;
-    const countStr = total > 0 ? ` • ${total} msgs` : "";
-    return `rex @ agentbox • ${modelId}${countStr}`;
-  }, [history.messages.length]);
+  const modelId = agentbox.instance.state.model.id;
+  const countStr = agentbox.messageCount > 0 ? ` • ${agentbox.messageCount} msgs` : "";
+  const title = `${agentbox.name} @ agentbox • ${modelId}${countStr}`;
 
   return (
-    <Box flexDirection="column">
-      <Box borderStyle="round" borderColor="cyan" paddingX={1} marginBottom={1}>
-        <Text color="cyan" bold>{statusLine}</Text>
-      </Box>
+    <Box flexDirection="column" padding={1}>
+      <Text color="cyan" bold>{title}</Text>
+      <Text color="gray">─────────────────────────────────────────</Text>
 
-      {truncated && (
-        <Box marginBottom={1} paddingX={1}>
-          <Text color="gray" dimColor>↑ older messages hidden • /clear to reset</Text>
-        </Box>
-      )}
-
-      <Box flexDirection="column" flexGrow={1}>
-        {visibleMessages.map((msg, i) => (
-          <MessageView
-            key={`${history.messages.length - visibleMessages.length + i}-${msg.role}`}
-            msg={msg}
-          />
+      <Box flexDirection="column" marginTop={1}>
+        {messages.map((msg, i) => (
+          <Box key={i} marginBottom={1} flexDirection="column">
+            {msg.role === "user" && (
+              <Box>
+                <Text color="green" bold>you › </Text>
+                <Text>{msg.content}</Text>
+              </Box>
+            )}
+            {msg.role === "assistant" && (
+              <Box>
+                <Text color="cyan" bold>{agentbox.name} › </Text>
+                <Text>{msg.content}</Text>
+              </Box>
+            )}
+            {msg.role === "system" && (
+              <Text color="yellow">{msg.content}</Text>
+            )}
+          </Box>
         ))}
 
-        {history.isStreaming && (
-          <Box marginY={0}>
-            <Text color="green" bold>rex&gt; </Text>
-            <Text wrap="wrap">{history.streamingText}</Text>
-            <Text color="gray">▌</Text>
+        {appState === "responding" && streamBuffer && (
+          <Box>
+            <Text color="cyan" bold>{agentbox.name} › </Text>
+            <Text color="gray">{streamBuffer}</Text>
           </Box>
+        )}
+
+        {appState === "responding" && !streamBuffer && (
+          <Text color="gray" dimColor>thinking...</Text>
         )}
       </Box>
 
-      {notice && (
-        <Box marginY={1} borderStyle="round" borderColor="yellow" paddingX={1}>
-          <Text color="yellow">{notice}</Text>
-        </Box>
-      )}
-
-      <Box borderStyle="round" borderColor="gray" paddingX={1} marginTop={1}>
-        {appState === "ready" ? (
-          <Box>
-            <Text color="cyan" bold>you&gt; </Text>
-            <TextInput
-              value={input}
-              onChange={setInput}
-              onSubmit={handleSubmit}
-              placeholder="message… (/help)"
-            />
-          </Box>
+      <Box marginTop={1}>
+        <Text color="green" bold>you › </Text>
+        {appState === "idle" ? (
+          <TextInput
+            value={input}
+            onChange={setInput}
+            onSubmit={handleSubmit}
+            placeholder="type a message..."
+          />
         ) : (
-          <Text color="gray">thinking… (Ctrl+Enter to abort)</Text>
+          <Text color="gray" dimColor>responding... (ctrl+c to abort)</Text>
         )}
       </Box>
     </Box>
@@ -276,6 +161,6 @@ function App() {
 }
 
 export async function startTUI(): Promise<void> {
-  console.log("Starting Rex TUI...");
-  render(<App />);
+  console.log("Starting AgentBox TUI...");
+  render(<AgentBoxTUI />);
 }

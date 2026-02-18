@@ -8,8 +8,8 @@ AgentBox gives Claude a persistent home on your hardware:
 
 - **Telegram interface** — talk to your agent from anywhere, with live streaming responses
 - **Full shell access** — the agent can run commands, read/write files, install packages, manage processes
-- **Persistent memory** — notes survive across sessions; the agent builds up context about your system over time
-- **Singleton agent** — one agent, shared across all connections. No session fragmentation.
+- **Persistent memory** — notes survive across sessions; the agent builds context about your system over time
+- **Multi-agent support** — run multiple named agents on the same machine, each with their own identity and config
 - **Claude Code OAuth** — uses your existing Claude Pro/Max subscription, no separate API billing
 
 ## Prerequisites
@@ -27,19 +27,34 @@ cd agentbox
 npm install
 ```
 
-### Configure Telegram
+### Create your agent
+
+Each agent lives in `~/.agentbox/<agent-name>/`. Create a config:
 
 ```bash
-mkdir -p ~/.config/rex
-cat > ~/.config/rex/telegram.json << EOF
+mkdir -p ~/.agentbox/myagent
+
+cat > ~/.agentbox/myagent/config.json << 'EOF'
 {
-  "token": "YOUR_BOT_TOKEN",
-  "allowedUsers": [YOUR_TELEGRAM_USER_ID]
+  "name": "MyAgent",
+  "telegram": {
+    "token": "YOUR_BOT_TOKEN",
+    "allowedUsers": [YOUR_TELEGRAM_USER_ID]
+  }
 }
 EOF
 ```
 
-`allowedUsers` is a whitelist — anyone not on the list gets silently dropped.
+Optionally give your agent a personality:
+
+```bash
+cat > ~/.agentbox/myagent/SOUL.md << 'EOF'
+You are MyAgent. You are direct, curious, and get things done.
+...
+EOF
+```
+
+The agent will also maintain its own `~/.agentbox/myagent/notes/` directory for persistent memory across sessions.
 
 ### Authenticate Claude
 
@@ -53,14 +68,54 @@ claude  # follow the OAuth flow
 ## Running
 
 ```bash
-# Dev (tsx, hot-ish)
-npm run telegram
+# Run with a specific agent
+AGENT=myagent npm run telegram
 
 # Or via systemd (recommended for always-on)
-cp systemd/rex.service ~/.config/systemd/user/rex.service
-# Edit the paths in rex.service to match your setup
-systemctl --user enable --now rex
+cp systemd/agentbox.service ~/.config/systemd/user/myagent.service
+# Edit paths and AGENT= in myagent.service
+systemctl --user enable --now myagent
 ```
+
+## Multiple Agents
+
+Each agent is fully isolated — separate identity, config, tokens, and memory:
+
+```
+~/.agentbox/
+  myagent/
+    config.json     ← name, model, telegram token, allowed users
+    SOUL.md         ← personality / system prompt
+    notes/          ← persistent memory (auto-managed by agent)
+  otheragent/
+    config.json
+    SOUL.md
+    notes/
+```
+
+Run them simultaneously with different `AGENT=` env vars and different bot tokens.
+
+## Agent Config Reference
+
+`~/.agentbox/<name>/config.json`:
+
+```json
+{
+  "name": "MyAgent",
+  "model": "claude-sonnet-4-6",
+  "telegram": {
+    "token": "YOUR_BOT_TOKEN",
+    "allowedUsers": [123456789]
+  }
+}
+```
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `name` | yes | Display name used in responses |
+| `model` | no | Anthropic model ID (default: `claude-sonnet-4-6`) |
+| `telegram.token` | yes | Bot token from @BotFather |
+| `telegram.allowedUsers` | yes | Telegram user ID whitelist |
 
 ## Telegram Commands
 
@@ -68,7 +123,7 @@ systemctl --user enable --now rex
 |---------|-------------|
 | `/start` or `/help` | Show available commands |
 | `/clear` | Clear conversation history |
-| `/status` | Show current model and message count |
+| `/status` | Show agent name, model, message count |
 | `/model <id>` | Switch model (e.g. `/model claude-opus-4-5`) |
 | `/thinking` | Toggle extended thinking on/off |
 
@@ -78,30 +133,19 @@ Send text, images, files, or voice messages — all supported.
 
 ```
 src/
-  agent.ts          # Agent setup, tools (shell, read_file, write_file, list_dir)
-  rex.ts            # Singleton Rex instance, connection-agnostic
-  auth.ts           # Claude Code OAuth credential loading
-  workspace.ts      # System prompt / workspace context loader
+  agent.ts              # Agent setup, tools (shell, read_file, write_file, list_dir)
+  agentbox.ts           # Singleton AgentBox instance, connection-agnostic
+  config.ts             # Agent config loader (~/.agentbox/<name>/)
+  auth.ts               # Claude Code OAuth credential loading
+  workspace.ts          # System prompt builder (preamble + SOUL.md + notes/)
   connections/
-    telegram.ts     # Telegram adapter (grammY)
-    tui.tsx         # Terminal UI adapter (Ink)
-  telegram.ts       # Telegram entrypoint
-  index.tsx         # TUI entrypoint
+    telegram.ts         # Telegram adapter (grammY)
+    tui.tsx             # Terminal UI adapter (Ink)
+  telegram.ts           # Telegram entrypoint
+  index.tsx             # TUI entrypoint
 ```
 
-Connections are adapters over the Rex singleton. Adding a new interface (Discord, Slack, etc.) means writing a new adapter — the agent logic stays the same.
-
-## Customizing Your Agent
-
-Edit `SOUL.md` to change the agent's personality, behavior, and identity. This gets loaded as part of the system prompt.
-
-Edit `src/agent.ts` to add or remove tools.
-
-## Notes System
-
-The agent maintains a `notes/` directory as persistent memory — goals, system knowledge, journal entries. These survive context compaction and restarts. The agent reads and updates them autonomously.
-
-> `notes/` is gitignored by default. It's your agent's private state.
+Connections are adapters over the AgentBox singleton. Adding a new interface (Discord, Slack, etc.) means writing a new adapter in `src/connections/`.
 
 ## Philosophy
 
