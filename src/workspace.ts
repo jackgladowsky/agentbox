@@ -82,7 +82,7 @@ async function loadNotes(name: string): Promise<{ filename: string; content: str
   try {
     const entries = await readdir(dir);
     const notes: { filename: string; content: string }[] = [];
-    for (const entry of entries.filter(e => e.endsWith(".md"))) {
+    for (const entry of entries.filter(e => e.endsWith(".md")).sort()) {
       try {
         const content = await readFile(join(dir, entry), "utf-8");
         if (content.trim()) notes.push({ filename: entry, content: content.trim() });
