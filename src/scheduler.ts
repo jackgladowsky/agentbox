@@ -221,6 +221,54 @@ async function loadSchedule(): Promise<ScheduledTask[]> {
   return parsed.tasks;
 }
 
+// ── Task registration ─────────────────────────────────────────────────────────
+
+/** Map from task id → active node-cron ScheduledTask handle */
+const activeCronJobs = new Map<string, ReturnType<typeof schedule>>();
+
+/**
+ * Stop all currently running cron jobs, then register a new set of tasks.
+ * Returns the number of successfully registered tasks.
+ */
+async function registerTasks(
+  tasks: ScheduledTask[],
+  systemPrompt: string,
+  telegramToken: string | undefined,
+  telegramChatId: number | undefined
+): Promise<number> {
+  // Stop and clear existing cron jobs
+  for (const [id, job] of activeCronJobs) {
+    job.stop();
+    activeCronJobs.delete(id);
+  }
+
+  let count = 0;
+
+  for (const task of tasks) {
+    if (!validate(task.schedule)) {
+      await log(`[${task.id}] Invalid cron expression "${task.schedule}" — skipping`);
+      continue;
+    }
+
+    await log(`[${task.id}] Registered: "${task.name}" @ ${task.schedule}`);
+
+    const job = schedule(task.schedule, async () => {
+      // Each invocation runs independently; errors don't affect other tasks
+      try {
+        await runTask(task, systemPrompt, telegramToken, telegramChatId);
+      } catch (err: any) {
+        // Catch any unexpected errors at the top level so the scheduler stays alive
+        await log(`[${task.id}] Unexpected top-level error: ${err?.message ?? String(err)}`);
+      }
+    });
+
+    activeCronJobs.set(task.id, job);
+    count++;
+  }
+
+  return count;
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
@@ -245,39 +293,18 @@ async function main(): Promise<void> {
   // Build system prompt once and reuse across all tasks
   const { systemPrompt } = await loadWorkspaceContext();
 
-  // Load task schedule
+  // Load task schedule and register tasks
   const tasks = await loadSchedule();
   await log(`Loaded ${tasks.length} task(s) from ${SCHEDULE_PATH}`);
 
-  // Validate and register all tasks
-  const registered: string[] = [];
+  const registered = await registerTasks(tasks, systemPrompt, telegramToken, telegramChatId);
 
-  for (const task of tasks) {
-    if (!validate(task.schedule)) {
-      await log(`[${task.id}] Invalid cron expression "${task.schedule}" — skipping`);
-      continue;
-    }
-
-    await log(`[${task.id}] Registered: "${task.name}" @ ${task.schedule}`);
-    registered.push(task.id);
-
-    schedule(task.schedule, async () => {
-      // Each invocation runs independently; errors don't affect other tasks
-      try {
-        await runTask(task, systemPrompt, telegramToken, telegramChatId, openrouterKey);
-      } catch (err: any) {
-        // Catch any unexpected errors at the top level so the scheduler stays alive
-        await log(`[${task.id}] Unexpected top-level error: ${err?.message ?? String(err)}`);
-      }
-    });
-  }
-
-  if (registered.length === 0) {
+  if (registered === 0) {
     await log("No valid tasks registered — exiting.");
     process.exit(1);
   }
 
-  await log(`Scheduler running with ${registered.length} task(s). PID: ${process.pid}`);
+  await log(`Scheduler running with ${registered} task(s). PID: ${process.pid}`);
 
   // Keep process alive
   process.on("SIGINT", async () => {
@@ -288,6 +315,18 @@ async function main(): Promise<void> {
   process.on("SIGTERM", async () => {
     await log("Scheduler stopping (SIGTERM)");
     process.exit(0);
+  });
+
+  process.on("SIGHUP", async () => {
+    await log("[Scheduler] SIGHUP received — reloading schedule...");
+    try {
+      const newTasks = await loadSchedule();
+      await log(`[Scheduler] Loaded ${newTasks.length} task(s) from ${SCHEDULE_PATH}`);
+      const newCount = await registerTasks(newTasks, systemPrompt, telegramToken, telegramChatId);
+      await log(`[Scheduler] Reload complete — ${newCount} task(s) active`);
+    } catch (err: any) {
+      await log(`[Scheduler] Reload failed — keeping old schedule. Error: ${err?.message ?? String(err)}`);
+    }
   });
 
   process.on("uncaughtException", async (err) => {
