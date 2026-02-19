@@ -21,7 +21,6 @@ import { agentbox, type MessageSource } from "../agentbox.js";
 import { type AgentEvent } from "@mariozechner/pi-agent-core";
 import { type TextContent } from "@mariozechner/pi-ai";
 import { loadAgentConfig, getAgentName } from "../config.js";
-import { MEMORY_SOURCE_ID } from "../memory.js";
 import { saveCheckpoint } from "../checkpoint.js";
 
 const execAsync = promisify(exec);
@@ -241,8 +240,8 @@ export async function startTelegram(): Promise<void> {
     const unsubscribe = agentbox.subscribe(`telegram-reply:${sourceId(ctx)}`, async (event: AgentEvent, evtSource: MessageSource) => {
       if (evtSource.id !== source.id) return;
 
-      // Suppress memory write-back responses from being forwarded to the user.
-      if (evtSource.id === MEMORY_SOURCE_ID) return;
+      // Suppress internal (e.g. memory write-back) responses from being forwarded to the user.
+      if (evtSource.internal) return;
 
       if (event.type === "message_update" && event.message.role === "assistant") {
         const text = event.message.content
