@@ -15,7 +15,7 @@ import { readFile, writeFile, access } from "fs/promises";
 import { join } from "path";
 import { homedir } from "os";
 import { agentbox, type MessageSource } from "./agentbox.js";
-import { getAgentName, agentDir } from "./config.js";
+import { getAgentName, agentDir, notesDir } from "./config.js";
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 
@@ -74,12 +74,16 @@ function buildWriteBackPrompt(): string {
   const date = now.toISOString().slice(0, 10);
   const time = now.toTimeString().slice(0, 5); // HH:MM
 
+  const memoryFile = join(agentDir(), "memory", `${date}.md`);
+  const notes = notesDir();
+  const dir = agentDir();
+
   return (
     `[SYSTEM: Session idle. Reflect on this conversation and update your persistent memory.\n` +
-    `1. Write/append a summary to /home/jack/rex-config/memory/${date}.md using the format:\n` +
+    `1. Write/append a summary to ${memoryFile} using the format:\n` +
     `   # Memory — ${date}\n\n   ## Session: ${time}\n   <your summary here>\n` +
-    `2. Update any relevant notes in /home/jack/rex-config/notes/ if you learned something new\n` +
-    `3. Run: cd /home/jack/rex-config && git add -A && git commit -m "memory: session summary $(date)" && git push\n` +
+    `2. Update any relevant notes in ${notes}/ if you learned something new\n` +
+    `3. Run: cd ${dir} && git add -A && git commit -m "memory: session summary $(date)" && git push\n` +
     `Do this silently — do NOT send a Telegram message.]`
   );
 }
