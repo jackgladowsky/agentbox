@@ -6,9 +6,13 @@
 import React, { useState, useEffect, useRef } from "react";
 import { render, Box, Text, useInput, useApp } from "ink";
 import TextInput from "ink-text-input";
+import { exec } from "child_process";
+import { promisify } from "util";
 import { agentbox, type MessageSource } from "../agentbox.js";
 import { type AgentEvent } from "@mariozechner/pi-agent-core";
 import { type TextContent } from "@mariozechner/pi-ai";
+
+const execAsync = promisify(exec);
 
 type AppState = "idle" | "responding";
 
@@ -42,7 +46,7 @@ function AgentBoxTUI() {
     setInput("");
 
     // Commands
-    if (trimmed === "/clear") {
+    if (trimmed === "/clear" || trimmed === "/reset" || trimmed === "/new") {
       agentbox.clearMessages();
       setMessages([]);
       return;
@@ -53,14 +57,34 @@ function AgentBoxTUI() {
       setMessages(prev => [...prev, { role: "system", content: `✓ Switched to ${modelId}` }]);
       return;
     }
-    if (trimmed === "/thinking on") { agentbox.setThinkingLevel("medium"); setInput(""); return; }
-    if (trimmed === "/thinking off") { agentbox.setThinkingLevel("off"); setInput(""); return; }
+    if (trimmed === "/thinking") {
+      const current = agentbox.instance.state.thinkingLevel ?? "off";
+      const next = current === "off" ? "medium" : "off";
+      agentbox.setThinkingLevel(next);
+      setMessages(prev => [...prev, { role: "system", content: `✓ Thinking: ${next}` }]);
+      return;
+    }
     if (trimmed === "/status") {
       const state = agentbox.instance.state;
       setMessages(prev => [...prev, {
         role: "system",
         content: `Agent: ${agentbox.name}\nModel: ${state.model.id}\nMessages: ${agentbox.messageCount}\nThinking: ${state.thinkingLevel ?? "off"}`
       }]);
+      return;
+    }
+    if (trimmed === "/update") {
+      setMessages(prev => [...prev, { role: "system", content: "⬇️ Pulling latest code..." }]);
+      execAsync("git pull --ff-only", { cwd: process.cwd() }).then(({ stdout }) => {
+        const summary = stdout.trim();
+        if (summary.includes("Already up to date")) {
+          setMessages(prev => [...prev, { role: "system", content: "✓ Already up to date. No restart needed." }]);
+        } else {
+          setMessages(prev => [...prev, { role: "system", content: `✓ Updated:\n${summary}\n\nRestarting...` }]);
+          setTimeout(() => process.kill(process.pid, "SIGTERM"), 1500);
+        }
+      }).catch((err: Error) => {
+        setMessages(prev => [...prev, { role: "system", content: `⚠️ Update failed:\n${err.message}` }]);
+      });
       return;
     }
 
@@ -93,6 +117,9 @@ function AgentBoxTUI() {
         setAppState("idle");
       }
     });
+
+    // Signal activity so the memory module resets its idle timer.
+    agentbox.markActivity();
 
     agentbox.prompt(trimmed, TUI_SOURCE).catch(err => {
       unsubscribe();
