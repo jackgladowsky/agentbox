@@ -107,9 +107,10 @@ async function sendTelegram(token: string, chatId: number, text: string): Promis
 async function runAgentPrompt(
   systemPrompt: string,
   prompt: string,
-  taskId: string
+  taskId: string,
+  openrouterKey?: string
 ): Promise<string> {
-  const agent = createAgent(systemPrompt);
+  const agent = createAgent(systemPrompt, undefined, openrouterKey);
 
   return new Promise<string>((resolve, reject) => {
     let finalText = "";
@@ -144,7 +145,8 @@ async function runTask(
   task: ScheduledTask,
   systemPrompt: string,
   telegramToken: string | undefined,
-  telegramChatId: number | undefined
+  telegramChatId: number | undefined,
+  openrouterKey?: string
 ): Promise<TaskResult> {
   const startedAt = new Date();
   await log(`[${task.id}] Starting: ${task.name}`);
@@ -153,7 +155,7 @@ async function runTask(
   let success = true;
 
   try {
-    output = await runAgentPrompt(systemPrompt, task.prompt, task.id);
+    output = await runAgentPrompt(systemPrompt, task.prompt, task.id, openrouterKey);
     await log(`[${task.id}] Completed. Output length: ${output.length} chars`);
   } catch (err: any) {
     success = false;
@@ -231,6 +233,7 @@ async function main(): Promise<void> {
   const config = await loadAgentConfig(AGENT_NAME);
   const telegramToken = config.telegram?.token;
   const telegramChatId = config.telegram?.allowedUsers?.[0]; // notify the first allowed user
+  const openrouterKey = config.openrouterKey;
 
   if (!telegramToken || !telegramChatId) {
     await log(
@@ -261,7 +264,7 @@ async function main(): Promise<void> {
     schedule(task.schedule, async () => {
       // Each invocation runs independently; errors don't affect other tasks
       try {
-        await runTask(task, systemPrompt, telegramToken, telegramChatId);
+        await runTask(task, systemPrompt, telegramToken, telegramChatId, openrouterKey);
       } catch (err: any) {
         // Catch any unexpected errors at the top level so the scheduler stays alive
         await log(`[${task.id}] Unexpected top-level error: ${err?.message ?? String(err)}`);
