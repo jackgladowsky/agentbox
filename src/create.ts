@@ -34,6 +34,21 @@ function ask(rl: readline.Interface, question: string, defaultVal?: string): Pro
   });
 }
 
+// ── Telegram validation ────────────────────────────────────────────────────────
+
+async function validateTelegramToken(token: string): Promise<string | null> {
+  try {
+    const res = await fetch(`https://api.telegram.org/bot${token}/getMe`);
+    const data = await res.json() as { ok: boolean; result?: { username?: string } };
+    if (data.ok && data.result?.username) {
+      return data.result.username;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 // ── File generators ───────────────────────────────────────────────────────────
 
 function defaultSoul(name: string): string {
@@ -71,12 +86,17 @@ function defaultConfig(name: string): object {
   return { name };
 }
 
-function defaultSecrets(telegramToken?: string, allowedUsers?: number[]): object | null {
-  if (!telegramToken) return null;
-  return {
-    telegramToken,
-    telegramAllowedUsers: allowedUsers ?? [],
-  };
+function defaultSecrets(telegramToken?: string, allowedUsers?: number[], openrouterKey?: string): object | null {
+  if (!telegramToken && !openrouterKey) return null;
+  const secrets: Record<string, unknown> = {};
+  if (telegramToken) {
+    secrets.telegramToken = telegramToken;
+    secrets.telegramAllowedUsers = allowedUsers ?? [];
+  }
+  if (openrouterKey) {
+    secrets.openrouterKey = openrouterKey;
+  }
+  return secrets;
 }
 
 function defaultSchedule(): object {
@@ -171,13 +191,38 @@ async function main() {
 
   // Telegram setup
   console.log("\nTelegram setup (optional — skip to use TUI only)");
-  const telegramToken = await ask(rl, "Telegram bot token", "skip");
+  let telegramToken = "";
   let allowedUsers: number[] = [];
 
-  if (telegramToken && telegramToken !== "skip") {
-    const userIdStr = await ask(rl, "Your Telegram user ID (numbers only)");
-    const userId = parseInt(userIdStr);
-    if (!isNaN(userId)) allowedUsers = [userId];
+  while (true) {
+    const input = await ask(rl, "Telegram bot token", "skip");
+    if (!input || input === "skip") break;
+
+    process.stdout.write("  Validating token...");
+    const username = await validateTelegramToken(input);
+    if (username) {
+      console.log(` ✓ Token valid — bot is @${username}`);
+      telegramToken = input;
+      const userIdStr = await ask(rl, "Your Telegram user ID (numbers only)");
+      const userId = parseInt(userIdStr);
+      if (!isNaN(userId)) allowedUsers = [userId];
+      break;
+    } else {
+      console.log(" ✗ Invalid token — check your BotFather token and try again");
+    }
+  }
+
+  // OpenRouter setup
+  console.log("\nOpenRouter API key (optional)");
+  console.log("  Enables smarter context compaction using Gemini when conversation history grows long.");
+  console.log("  Without it, agentbox falls back to trimming old messages instead.");
+  const openrouterInput = await ask(rl, "OpenRouter API key", "skip");
+  let openrouterKey: string | undefined;
+  if (openrouterInput && openrouterInput !== "skip") {
+    openrouterKey = openrouterInput;
+    console.log("  ✓ OpenRouter key saved — Gemini compaction enabled");
+  } else {
+    console.log("  Skipping — context compaction will use trim fallback instead of Gemini");
   }
 
   rl.close();
@@ -188,7 +233,7 @@ async function main() {
   await mkdir(join(agentPath, "notes"), { recursive: true });
   await mkdir(join(agentPath, "memory"), { recursive: true });
 
-  const token = telegramToken !== "skip" ? telegramToken : undefined;
+  const token = telegramToken || undefined;
 
   await writeFile(
     join(agentPath, "config.json"),
@@ -196,7 +241,7 @@ async function main() {
     "utf-8"
   );
 
-  const secrets = defaultSecrets(token, allowedUsers);
+  const secrets = defaultSecrets(token, allowedUsers, openrouterKey);
   if (secrets) {
     await writeFile(
       join(agentPath, "secrets.json"),
