@@ -69,6 +69,36 @@ async function loadAgentSecrets(name: string): Promise<AgentSecrets> {
 }
 
 /**
+ * Validate an AgentConfig and return an array of error strings.
+ * An empty array means the config is valid.
+ */
+export function validateAgentConfig(config: AgentConfig): string[] {
+  const errors: string[] = [];
+
+  if (!config.name || typeof config.name !== "string") {
+    errors.push("config.name must be a non-empty string");
+  }
+
+  if (config.model !== undefined && (!config.model || typeof config.model !== "string")) {
+    errors.push("config.model must be a non-empty string");
+  }
+
+  if (config.telegram !== undefined) {
+    if (!config.telegram.token || typeof config.telegram.token !== "string") {
+      errors.push("config.telegram.token must be a non-empty string");
+    }
+    if (
+      !Array.isArray(config.telegram.allowedUsers) ||
+      config.telegram.allowedUsers.length === 0
+    ) {
+      errors.push("config.telegram.allowedUsers must be a non-empty array of numbers");
+    }
+  }
+
+  return errors;
+}
+
+/**
  * Load config.json for the given agent, merged with secrets.json.
  * Tokens from secrets.json take precedence over anything in config.json.
  * Throws with a helpful message if config.json is missing.
@@ -103,6 +133,14 @@ export async function loadAgentConfig(name: string = getAgentName()): Promise<Ag
 
   if (secrets.openrouterKey) {
     config.openrouterKey = secrets.openrouterKey;
+  }
+
+  const errors = validateAgentConfig(config);
+  if (errors.length > 0) {
+    throw new Error(
+      `Invalid config for agent "${name}":\n` +
+      errors.map((e) => `  - ${e}`).join("\n")
+    );
   }
 
   return config;
