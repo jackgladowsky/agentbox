@@ -16,6 +16,8 @@ export type MessageSource = {
   id: string;
   /** Human-readable label shown in logs */
   label: string;
+  /** If true, responses are not forwarded to the user */
+  internal?: boolean;
 };
 
 export type AgentResponseCallback = (event: AgentEvent, source: MessageSource) => void;

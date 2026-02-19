@@ -89,6 +89,7 @@ function buildWriteBackPrompt(): string {
 const MEMORY_SOURCE: MessageSource = {
   id: "memory:internal",
   label: "memory write-back (internal)",
+  internal: true,
 };
 
 // ── MemoryModule ───────────────────────────────────────────────────────────────
@@ -154,8 +155,3 @@ class MemoryModule {
 // Singleton
 export const memory = new MemoryModule();
 
-/**
- * The source ID used for internal memory write-back prompts.
- * telegram.ts uses this to suppress forwarding the response to the user.
- */
-export const MEMORY_SOURCE_ID = MEMORY_SOURCE.id;
