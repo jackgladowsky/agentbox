@@ -7,7 +7,7 @@
  * Features:
  * - Streaming responses with live message edits (feels like typing)
  * - File/image/voice downloads from Telegram → agent (saves to /tmp)
- * - /clear, /reset, /new, /model, /thinking, /status, /update, /help commands
+ * - /clear, /reset, /new, /model, /thinking, /status, /update, /build, /help commands
  * - Context checkpoint: saves messages on SIGTERM, restores on startup
  */
 
@@ -65,6 +65,28 @@ async function downloadFile(bot: Bot, fileId: string, filename: string): Promise
 /** chatIds currently being processed — used to drop duplicate rapid messages. */
 const processingChats = new Set<number>();
 
+// ── Shared build+restart helper ───────────────────────────────────────────────
+
+async function buildAndRestart(ctx: Context): Promise<void> {
+  await ctx.reply("🔨 Building...");
+  try {
+    await execAsync("npm run build", { cwd: process.cwd() });
+  } catch (buildErr: any) {
+    const output = (buildErr.stdout ?? "") + (buildErr.stderr ?? "");
+    await ctx.reply(`⚠️ Build failed — not restarting:\n${output.trim().slice(0, 1500)}`);
+    return;
+  }
+
+  await ctx.reply("✓ Build succeeded. Restarting...");
+
+  // Give Telegram time to send the message before we exit.
+  // SIGTERM handler will fire and save the checkpoint.
+  setTimeout(() => {
+    console.log("[Telegram] restarting via systemd");
+    process.kill(process.pid, "SIGTERM");
+  }, 1500);
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 export async function startTelegram(): Promise<void> {
@@ -116,30 +138,23 @@ export async function startTelegram(): Promise<void> {
 
   // ── Commands ──────────────────────────────────────────────────────────────
 
+  const HELP_TEXT =
+    `*${displayName}* commands:\n\n` +
+    `\`/clear\` — clear conversation history (also: \`/reset\`, \`/new\`)\n` +
+    `\`/status\` — show model, message count, current commit\n` +
+    `\`/model <id>\` — switch model (e.g. \`/model claude-opus-4-6\`)\n` +
+    `\`/thinking on|off\` — toggle extended thinking mode\n` +
+    `\`/update\` — git pull + build + restart\n` +
+    `\`/build\` — build + restart (no git pull)\n` +
+    `\`/help\` — show this message\n\n` +
+    `Send text, images, files, or voice messages and I'll handle them.`;
+
   bot.command("start", async (ctx) => {
-    await ctx.reply(
-      `${displayName} online. Send me anything.\n\n` +
-      `Commands:\n` +
-      `/reset — clear history and start fresh (also: /new)\n` +
-      `/clear — same as /reset\n` +
-      `/status — show model + message count\n` +
-      `/model <id> — switch model\n` +
-      `/thinking — toggle extended thinking\n` +
-      `/update — pull latest code and restart\n` +
-      `/help — this message`
-    );
+    await ctx.reply(HELP_TEXT, { parse_mode: "Markdown" });
   });
 
   bot.command("help", async (ctx) => {
-    await ctx.reply(
-      `/reset — clear history and start fresh (also: /new)\n` +
-      `/clear — same as /reset\n` +
-      `/status — show model + message count\n` +
-      `/model <id> — switch model (e.g. /model claude-opus-4-5)\n` +
-      `/thinking — toggle extended thinking\n` +
-      `/update — pull latest code and restart\n` +
-      `\nSend files/images and I'll receive them.`
-    );
+    await ctx.reply(HELP_TEXT, { parse_mode: "Markdown" });
   });
 
   // Shared reset handler — clears history, replies immediately, no restart needed
@@ -178,10 +193,20 @@ export async function startTelegram(): Promise<void> {
   });
 
   bot.command("thinking", async (ctx) => {
-    const current = agentbox.instance.state.thinkingLevel ?? "off";
-    const next = current === "off" ? "medium" : "off";
-    agentbox.setThinkingLevel(next);
-    await ctx.reply(`✓ Thinking: ${next}`);
+    const arg = ctx.match?.trim().toLowerCase();
+    if (arg === "on") {
+      agentbox.setThinkingLevel("medium");
+      await ctx.reply("✓ Thinking: on");
+    } else if (arg === "off") {
+      agentbox.setThinkingLevel("off");
+      await ctx.reply("✓ Thinking: off");
+    } else {
+      // toggle if no arg
+      const current = agentbox.instance.state.thinkingLevel ?? "off";
+      const next = current === "off" ? "medium" : "off";
+      agentbox.setThinkingLevel(next);
+      await ctx.reply(`✓ Thinking: ${next}`);
+    }
   });
 
   bot.command("update", async (ctx) => {
@@ -191,32 +216,20 @@ export async function startTelegram(): Promise<void> {
       const summary = pullOut.trim();
 
       if (summary.includes("Already up to date")) {
-        await ctx.reply("✓ Already up to date. No restart needed.");
-        return;
+        await ctx.reply("✓ Already up to date. Rebuilding anyway...");
+      } else {
+        await ctx.reply(`✓ Pulled:\n${summary}`);
       }
 
-      await ctx.reply(`✓ Pulled:\n${summary}\n\n🔨 Building...`);
-
-      try {
-        await execAsync("npm run build", { cwd: process.cwd() });
-      } catch (buildErr: any) {
-        const output = (buildErr.stdout ?? "") + (buildErr.stderr ?? "");
-        await ctx.reply(`⚠️ Build failed — not restarting:\n${output.trim().slice(0, 1500)}`);
-        return;
-      }
-
-      await ctx.reply("✓ Build succeeded. Restarting...");
-
-      // Give Telegram time to send the message before we exit.
-      // SIGTERM handler will fire and save the checkpoint.
-      setTimeout(() => {
-        console.log("[Telegram] /update — restarting via systemd");
-        process.kill(process.pid, "SIGTERM");
-      }, 1500);
+      await buildAndRestart(ctx);
 
     } catch (err: any) {
       await ctx.reply(`⚠️ Update failed:\n${err.message}`);
     }
+  });
+
+  bot.command("build", async (ctx) => {
+    await buildAndRestart(ctx);
   });
 
   // ── Message handler ───────────────────────────────────────────────────────
