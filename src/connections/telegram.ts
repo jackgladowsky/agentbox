@@ -183,15 +183,25 @@ export async function startTelegram(): Promise<void> {
   bot.command("update", async (ctx) => {
     await ctx.reply("⬇️ Pulling latest code...");
     try {
-      const { stdout } = await execAsync("git pull --ff-only", { cwd: process.cwd() });
-      const summary = stdout.trim();
+      const { stdout: pullOut } = await execAsync("git pull --ff-only", { cwd: process.cwd() });
+      const summary = pullOut.trim();
 
       if (summary.includes("Already up to date")) {
         await ctx.reply("✓ Already up to date. No restart needed.");
         return;
       }
 
-      await ctx.reply(`✓ Updated:\n${summary}\n\nRestarting...`);
+      await ctx.reply(`✓ Pulled:\n${summary}\n\n🔨 Building...`);
+
+      try {
+        await execAsync("npm run build", { cwd: process.cwd() });
+      } catch (buildErr: any) {
+        const output = (buildErr.stdout ?? "") + (buildErr.stderr ?? "");
+        await ctx.reply(`⚠️ Build failed — not restarting:\n${output.trim().slice(0, 1500)}`);
+        return;
+      }
+
+      await ctx.reply("✓ Build succeeded. Restarting...");
 
       // Give Telegram time to send the message before we exit.
       // SIGTERM handler will fire and save the checkpoint.
