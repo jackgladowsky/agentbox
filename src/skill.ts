@@ -101,7 +101,19 @@ function loadAllSkills(): Skill[] {
 // ---------------------------------------------------------------------------
 
 function isInstalled(binary: string): boolean {
-  return spawnSync('which', [binary], { encoding: 'utf8' }).status === 0;
+  // 1. Try PATH lookup via `which`
+  if (spawnSync('which', [binary], { encoding: 'utf8' }).status === 0) return true;
+
+  // 2. If it looks like an absolute path, check existence directly
+  if (path.isAbsolute(binary)) {
+    try { fs.accessSync(binary, fs.constants.X_OK); return true; } catch { /* not found */ }
+  }
+
+  // 3. Resolve relative paths (e.g. ./node_modules/.bin/foo) against repo root
+  const resolved = path.resolve(REPO_ROOT, binary);
+  try { fs.accessSync(resolved, fs.constants.X_OK); return true; } catch { /* not found */ }
+
+  return false;
 }
 
 function authLabel(skill: Skill): string {
