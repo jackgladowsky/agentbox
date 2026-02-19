@@ -17,11 +17,11 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { exec } from "child_process";
 import { promisify } from "util";
-import { agentbox, type MessageSource } from "../agentbox.js";
+import { agentbox, type MessageSource } from "../core/agentbox.js";
 import { type AgentEvent } from "@mariozechner/pi-agent-core";
 import { type TextContent } from "@mariozechner/pi-ai";
-import { loadAgentConfig, getAgentName } from "../config.js";
-import { saveCheckpoint } from "../checkpoint.js";
+import { loadAgentConfig, getAgentName } from "../core/config.js";
+import { saveCheckpoint } from "../core/checkpoint.js";
 
 const execAsync = promisify(exec);
 
