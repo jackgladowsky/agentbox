@@ -61,6 +61,11 @@ async function downloadFile(bot: Bot, fileId: string, filename: string): Promise
   return localPath;
 }
 
+// ── Rate limiting ─────────────────────────────────────────────────────────────
+
+/** chatIds currently being processed — used to drop duplicate rapid messages. */
+const processingChats = new Set<number>();
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 export async function startTelegram(): Promise<void> {
@@ -208,6 +213,15 @@ export async function startTelegram(): Promise<void> {
   // ── Message handler ───────────────────────────────────────────────────────
 
   async function handleMessage(ctx: Context, content: string) {
+    const chatId = ctx.chat!.id;
+
+    if (processingChats.has(chatId)) {
+      await ctx.reply("Already processing your previous message, please wait.");
+      return;
+    }
+
+    processingChats.add(chatId);
+
     const source: MessageSource = {
       id: sourceId(ctx),
       label: `Telegram from ${ctx.from?.username ?? ctx.from?.id}`,
@@ -254,6 +268,7 @@ export async function startTelegram(): Promise<void> {
 
       if (event.type === "agent_end") {
         unsubscribe();
+        processingChats.delete(chatId);
         if (editTimeout) { clearTimeout(editTimeout); editTimeout = null; }
 
         const lastAssistant = [...event.messages].reverse().find(m => (m as any).role === "assistant");
@@ -281,6 +296,7 @@ export async function startTelegram(): Promise<void> {
 
     agentbox.prompt(content, source).catch(async (err) => {
       unsubscribe();
+      processingChats.delete(chatId);
       if (editTimeout) { clearTimeout(editTimeout); editTimeout = null; }
       console.error("[Telegram] Agent error:", err);
       await ctx.api.editMessageText(
@@ -324,7 +340,7 @@ export async function startTelegram(): Promise<void> {
   bot.on("message:voice", async (ctx) => {
     try {
       const localPath = await downloadFile(bot, ctx.message.voice.file_id, `voice_${Date.now()}.ogg`);
-      await handleMessage(ctx, `[Voice message saved to ${localPath}]`);
+      await handleMessage(ctx, `[Voice message saved to ${localPath}. Note: No automatic transcription — use the shell tool to transcribe if needed, e.g. with whisper.]`);
     } catch (err) {
       await ctx.reply(`⚠️ Failed to download voice: ${err}`);
     }
