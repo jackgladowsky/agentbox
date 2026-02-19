@@ -8,7 +8,7 @@ import { render, Box, Text, useInput, useApp } from "ink";
 import TextInput from "ink-text-input";
 import { exec } from "child_process";
 import { promisify } from "util";
-import { agentbox, type MessageSource } from "../agentbox.js";
+import { agentbox, type MessageSource } from "../core/agentbox.js";
 import { type AgentEvent } from "@mariozechner/pi-agent-core";
 import { type TextContent } from "@mariozechner/pi-ai";
 

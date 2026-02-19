@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 WorkingDirectory=/path/to/agentbox
-ExecStart=/path/to/node /path/to/agentbox/node_modules/.bin/tsx src/telegram.ts
+ExecStart=/path/to/node /path/to/agentbox/dist/entrypoints/telegram.js
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal

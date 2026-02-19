@@ -1,12 +1,11 @@
 /**
- * Telegram entrypoint — starts AgentBox with Telegram connection.
+ * TUI entrypoint — starts AgentBox with terminal interface.
  * Agent is selected via AGENT env var (default: "agent").
  */
 
-import { agentbox } from "./agentbox.js";
-import { hasCredentials, login } from "./auth.js";
-import { startTelegram } from "./connections/telegram.js";
-import { memory } from "./memory.js";
+import { agentbox } from "../core/agentbox.js";
+import { hasCredentials, login } from "../core/auth.js";
+import { startTUI } from "../connections/tui.js";
 
 async function main() {
   const hasAuth = await hasCredentials("anthropic");
@@ -17,8 +16,7 @@ async function main() {
   }
 
   await agentbox.init();
-  await memory.init();
-  await startTelegram();
+  await startTUI();
 }
 
 main().catch(err => {

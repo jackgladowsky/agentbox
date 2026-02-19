@@ -4,16 +4,16 @@
   "description": "An autonomous AI agent runtime for dedicated hardware.",
   "main": "index.js",
   "scripts": {
-    "dev": "tsx src/index.tsx",
-    "telegram": "tsx src/telegram.ts",
-    "scheduler": "tsx src/scheduler.ts",
+    "dev": "tsx src/entrypoints/tui.tsx",
+    "telegram": "tsx src/entrypoints/telegram.ts",
+    "scheduler": "tsx src/daemon/scheduler.ts",
     "test": "tsc --noEmit",
     "build": "tsc",
-    "start": "node dist/index.js",
-    "start:telegram": "node dist/telegram.js",
-    "start:scheduler": "node dist/scheduler.js",
-    "skill": "tsx src/skill.ts",
-    "create": "tsx src/create.ts"
+    "start": "node dist/entrypoints/tui.js",
+    "start:telegram": "node dist/entrypoints/telegram.js",
+    "start:scheduler": "node dist/daemon/scheduler.js",
+    "skill": "tsx src/cli/skill.ts",
+    "create": "tsx src/cli/create.ts"
   },
   "repository": {
     "type": "git",
@@ -53,7 +53,7 @@
     "typescript": "^5.9.3"
   },
   "bin": {
-    "agentbox-skill": "./src/skill.ts",
-    "agentbox-create": "./src/create.ts"
+    "agentbox-skill": "./src/cli/skill.ts",
+    "agentbox-create": "./src/cli/create.ts"
   }
 }

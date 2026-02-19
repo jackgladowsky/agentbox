@@ -13,9 +13,9 @@ import { schedule, validate } from "node-cron";
 import { readFile, appendFile, mkdir } from "fs/promises";
 import { join } from "path";
 import { homedir } from "os";
-import { createAgent } from "./agent.js";
-import { loadWorkspaceContext } from "./workspace.js";
-import { loadAgentConfig, agentDir } from "./config.js";
+import { createAgent } from "../core/agent.js";
+import { loadWorkspaceContext } from "../core/workspace.js";
+import { loadAgentConfig, agentDir } from "../core/config.js";
 import { type AgentEvent } from "@mariozechner/pi-agent-core";
 import { type TextContent } from "@mariozechner/pi-ai";
 
