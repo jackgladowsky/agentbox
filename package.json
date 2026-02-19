@@ -10,6 +10,8 @@
     "test": "tsc --noEmit",
     "build": "tsc",
     "start": "node dist/index.js",
+    "start:telegram": "node dist/telegram.js",
+    "start:scheduler": "node dist/scheduler.js",
     "skill": "tsx src/skill.ts",
     "create": "tsx src/create.ts"
   },
