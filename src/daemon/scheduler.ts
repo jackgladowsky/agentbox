@@ -16,6 +16,7 @@ import { homedir } from "os";
 import { createAgent } from "../core/agent.js";
 import { loadWorkspaceContext } from "../core/workspace.js";
 import { loadAgentConfig, agentDir } from "../core/config.js";
+import { sendTelegramMessage } from "../core/telegram-utils.js";
 import { type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
 import { type AssistantMessage, type TextContent } from "@mariozechner/pi-ai";
 
@@ -64,40 +65,6 @@ async function log(message: string): Promise<void> {
     // If we can't write the log, at least stdout got it
   }
 }
-
-// ── Telegram notifications ────────────────────────────────────────────────────
-
-async function sendTelegram(token: string, chatId: number, text: string): Promise<void> {
-  const MAX_LEN = 4096;
-  const chunks: string[] = [];
-  let remaining = text;
-  while (remaining.length > 0) {
-    if (remaining.length <= MAX_LEN) {
-      chunks.push(remaining);
-      break;
-    }
-    let split = remaining.lastIndexOf("\n", MAX_LEN);
-    if (split < MAX_LEN * 0.5) split = MAX_LEN;
-    chunks.push(remaining.slice(0, split));
-    remaining = remaining.slice(split).trimStart();
-  }
-
-  for (const chunk of chunks) {
-    const res = await fetch(
-      `https://api.telegram.org/bot${token}/sendMessage`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ chat_id: chatId, text: chunk }),
-      }
-    );
-    if (!res.ok) {
-      const body = await res.text();
-      throw new Error(`Telegram API error ${res.status}: ${body}`);
-    }
-  }
-}
-
 // ── Agent execution ───────────────────────────────────────────────────────────
 
 /**
@@ -178,7 +145,7 @@ async function runTask(
     const message = `${header}\n\n${output}\n\n_(${durationSec}s)_`;
 
     try {
-      await sendTelegram(telegramToken, telegramChatId, message);
+      await sendTelegramMessage(telegramToken, telegramChatId, message);
       await log(`[${task.id}] Telegram notification sent`);
     } catch (err: any) {
       await log(`[${task.id}] Failed to send Telegram notification: ${err?.message}`);
