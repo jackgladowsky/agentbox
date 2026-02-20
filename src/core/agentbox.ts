@@ -22,6 +22,9 @@ export type MessageSource = {
 
 export type AgentResponseCallback = (event: AgentEvent, source: MessageSource) => void;
 
+/** 5 minutes — if the agent hasn't resolved by then, something is hung. */
+const PROMPT_TIMEOUT_MS = 5 * 60 * 1000;
+
 class AgentBox {
   private agent: Agent | null = null;
   private listeners = new Map<string, AgentResponseCallback>();
@@ -88,7 +91,8 @@ class AgentBox {
 
   private async _runPrompt(content: string, source: MessageSource): Promise<void> {
     const agent = this.instance;
-    await new Promise<void>((resolve, reject) => {
+
+    const agentPromise = new Promise<void>((resolve, reject) => {
       const unsubscribe = agent.subscribe((event: AgentEvent) => {
         for (const cb of this.listeners.values()) cb(event, source);
         if (event.type === "agent_end") {
@@ -104,6 +108,22 @@ class AgentBox {
         reject(err);
       });
     });
+
+    const timeoutPromise = new Promise<void>((_, reject) => {
+      setTimeout(() => {
+        reject(new Error(`[AgentBox] Timeout exceeded (${PROMPT_TIMEOUT_MS / 1000}s) for source ${source.id}`));
+      }, PROMPT_TIMEOUT_MS);
+    });
+
+    try {
+      await Promise.race([agentPromise, timeoutPromise]);
+    } catch (err: any) {
+      if (err.message?.includes("Timeout exceeded")) {
+        console.error(`[AgentBox] Prompt timed out — aborting agent and moving on. (${source.id})`);
+        this.abort();
+      }
+      throw err;
+    }
   }
 
   abort(): void { this.agent?.abort(); }
