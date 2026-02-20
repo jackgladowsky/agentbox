@@ -18,8 +18,8 @@ import { tmpdir } from "os";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { agentbox, type MessageSource } from "../core/agentbox.js";
-import { type AgentEvent } from "@mariozechner/pi-agent-core";
-import { type TextContent } from "@mariozechner/pi-ai";
+import { type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
+import { type AssistantMessage, type TextContent } from "@mariozechner/pi-ai";
 import { loadAgentConfig, getAgentName } from "../core/config.js";
 import { saveCheckpoint } from "../core/checkpoint.js";
 
@@ -58,6 +58,21 @@ async function downloadFile(bot: Bot, fileId: string, filename: string): Promise
   const localPath = join(dir, filename);
   await writeFile(localPath, buf);
   return localPath;
+}
+
+// ── Type helpers ──────────────────────────────────────────────────────────────
+
+/** Type guard: narrow AgentMessage to AssistantMessage. */
+function isAssistantMessage(msg: AgentMessage): msg is AssistantMessage {
+  return (msg as AssistantMessage).role === "assistant";
+}
+
+/** Extract plain text from an AssistantMessage's content array. */
+function extractAssistantText(msg: AssistantMessage): string {
+  return msg.content
+    .filter((c): c is TextContent => c.type === "text")
+    .map(c => c.text)
+    .join("");
 }
 
 // ── Rate limiting ─────────────────────────────────────────────────────────────
@@ -280,11 +295,8 @@ export async function startTelegram(): Promise<void> {
       // Suppress internal (e.g. memory write-back) responses from being forwarded to the user.
       if (evtSource.internal) return;
 
-      if (event.type === "message_update" && event.message.role === "assistant") {
-        const text = event.message.content
-          .filter((c): c is TextContent => c.type === "text")
-          .map(c => c.text)
-          .join("");
+      if (event.type === "message_update" && isAssistantMessage(event.message)) {
+        const text = extractAssistantText(event.message);
         if (text) scheduleEdit(text);
       }
 
@@ -293,25 +305,20 @@ export async function startTelegram(): Promise<void> {
         processingChats.delete(chatId);
         if (editTimeout) { clearTimeout(editTimeout); editTimeout = null; }
 
-        const lastAssistant = [...event.messages].reverse().find(m => (m as any).role === "assistant");
-        let finalText = "";
-        if (lastAssistant) {
-          finalText = (lastAssistant as any).content
-            .filter((c: any): c is TextContent => c.type === "text")
-            .map((c: any) => c.text)
-            .join("")
-            .trim();
-        }
+        const lastAssistant = [...event.messages].reverse().find(isAssistantMessage);
+        const finalText = lastAssistant
+          ? extractAssistantText(lastAssistant).trim()
+          : "";
 
-        if (!finalText) finalText = "_(no response)_";
+        const displayText = finalText || "_(no response)_";
 
-        if (finalText.length <= TELEGRAM_MAX_LENGTH) {
+        if (displayText.length <= TELEGRAM_MAX_LENGTH) {
           try {
-            await ctx.api.editMessageText(ctx.chat!.id, sentMsg.message_id, finalText);
+            await ctx.api.editMessageText(ctx.chat!.id, sentMsg.message_id, displayText);
           } catch { /* unchanged */ }
         } else {
           try { await ctx.api.deleteMessage(ctx.chat!.id, sentMsg.message_id); } catch {}
-          for (const chunk of splitMessage(finalText)) await ctx.reply(chunk);
+          for (const chunk of splitMessage(displayText)) await ctx.reply(chunk);
         }
       }
     });

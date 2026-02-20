@@ -9,8 +9,8 @@ import TextInput from "ink-text-input";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { agentbox, type MessageSource } from "../core/agentbox.js";
-import { type AgentEvent } from "@mariozechner/pi-agent-core";
-import { type TextContent } from "@mariozechner/pi-ai";
+import { type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
+import { type AssistantMessage, type TextContent } from "@mariozechner/pi-ai";
 
 const execAsync = promisify(exec);
 
@@ -22,6 +22,23 @@ interface Message {
 }
 
 const TUI_SOURCE: MessageSource = { id: "tui:local", label: "TUI" };
+
+// ── Type helpers ──────────────────────────────────────────────────────────────
+
+/** Type guard: narrow AgentMessage to AssistantMessage. */
+function isAssistantMessage(msg: AgentMessage): msg is AssistantMessage {
+  return (msg as AssistantMessage).role === "assistant";
+}
+
+/** Extract plain text from an AssistantMessage's content array. */
+function extractAssistantText(msg: AssistantMessage): string {
+  return msg.content
+    .filter((c): c is TextContent => c.type === "text")
+    .map(c => c.text)
+    .join("");
+}
+
+// ── Component ─────────────────────────────────────────────────────────────────
 
 function AgentBoxTUI() {
   const { exit } = useApp();
@@ -93,25 +110,17 @@ function AgentBoxTUI() {
     setStreamBuffer("");
 
     const unsubscribe = agentbox.subscribe("tui", (event: AgentEvent) => {
-      if (event.type === "message_update" && event.message.role === "assistant") {
-        const text = event.message.content
-          .filter((c): c is TextContent => c.type === "text")
-          .map(c => c.text)
-          .join("");
+      if (event.type === "message_update" && isAssistantMessage(event.message)) {
+        const text = extractAssistantText(event.message);
         setStreamBuffer(text);
       }
 
       if (event.type === "agent_end") {
         unsubscribe();
-        const lastAssistant = [...event.messages].reverse().find(m => (m as any).role === "assistant");
-        let finalText = "";
-        if (lastAssistant) {
-          finalText = (lastAssistant as any).content
-            .filter((c: any): c is TextContent => c.type === "text")
-            .map((c: any) => c.text)
-            .join("")
-            .trim();
-        }
+        const lastAssistant = [...event.messages].reverse().find(isAssistantMessage);
+        const finalText = lastAssistant
+          ? extractAssistantText(lastAssistant).trim()
+          : "";
         setStreamBuffer("");
         setMessages(prev => [...prev, { role: "assistant", content: finalText || "(no response)" }]);
         setAppState("idle");

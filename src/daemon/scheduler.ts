@@ -16,8 +16,8 @@ import { homedir } from "os";
 import { createAgent } from "../core/agent.js";
 import { loadWorkspaceContext } from "../core/workspace.js";
 import { loadAgentConfig, agentDir } from "../core/config.js";
-import { type AgentEvent } from "@mariozechner/pi-agent-core";
-import { type TextContent } from "@mariozechner/pi-ai";
+import { type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
+import { type AssistantMessage, type TextContent } from "@mariozechner/pi-ai";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -115,16 +115,17 @@ async function runAgentPrompt(
   return new Promise<string>((resolve, reject) => {
     let finalText = "";
 
+    const isAssistant = (m: AgentMessage): m is AssistantMessage =>
+      (m as AssistantMessage).role === "assistant";
+
     const unsubscribe = agent.subscribe((event: AgentEvent) => {
       if (event.type === "agent_end") {
         unsubscribe();
-        const lastMsg = [...event.messages].reverse().find(
-          (m: any) => m.role === "assistant"
-        );
+        const lastMsg = [...event.messages].reverse().find(isAssistant);
         if (lastMsg) {
-          finalText = (lastMsg as any).content
-            .filter((c: any): c is TextContent => c.type === "text")
-            .map((c: any) => c.text)
+          finalText = lastMsg.content
+            .filter((c): c is TextContent => c.type === "text")
+            .map(c => c.text)
             .join("")
             .trim();
         }
