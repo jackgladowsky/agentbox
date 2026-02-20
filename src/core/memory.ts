@@ -51,7 +51,8 @@ function todayString(): string {
 }
 
 function markerPath(): string {
-  return `/tmp/agentbox-memory-${todayString()}`;
+  const agentName = getAgentName();
+  return `/tmp/agentbox-memory-${agentName}-${todayString()}`;
 }
 
 async function isSavedToday(): Promise<boolean> {
@@ -158,4 +159,3 @@ class MemoryModule {
 
 // Singleton
 export const memory = new MemoryModule();
-
