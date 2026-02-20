@@ -30,6 +30,14 @@ export interface AgentConfig {
   telegram?: TelegramConfig;
   /** OpenRouter API key — loaded from secrets.json, used for compaction */
   openrouterKey?: string;
+  /**
+   * Shell command allowlist. Only base commands in this list will be executed.
+   * If defined, any command whose base name is not in the list is rejected.
+   * If omitted entirely, ALL shell commands are denied (default-deny).
+   *
+   * Example: ["git", "npm", "cat", "ls"]
+   */
+  shellAllowlist?: string[];
 }
 
 export interface AgentSecrets {
@@ -92,6 +100,15 @@ export function validateAgentConfig(config: AgentConfig): string[] {
       config.telegram.allowedUsers.length === 0
     ) {
       errors.push("config.telegram.allowedUsers must be a non-empty array of numbers");
+    }
+  }
+
+  if (config.shellAllowlist !== undefined) {
+    if (
+      !Array.isArray(config.shellAllowlist) ||
+      config.shellAllowlist.some((e) => typeof e !== "string")
+    ) {
+      errors.push("config.shellAllowlist must be an array of strings");
     }
   }
 

@@ -108,9 +108,10 @@ async function runAgentPrompt(
   systemPrompt: string,
   prompt: string,
   taskId: string,
-  openrouterKey?: string
+  openrouterKey?: string,
+  shellAllowlist?: string[]
 ): Promise<string> {
-  const agent = createAgent(systemPrompt, undefined, openrouterKey);
+  const agent = createAgent(systemPrompt, undefined, openrouterKey, shellAllowlist);
 
   return new Promise<string>((resolve, reject) => {
     let finalText = "";
@@ -146,7 +147,8 @@ async function runTask(
   systemPrompt: string,
   telegramToken: string | undefined,
   telegramChatId: number | undefined,
-  openrouterKey?: string
+  openrouterKey?: string,
+  shellAllowlist?: string[]
 ): Promise<TaskResult> {
   const startedAt = new Date();
   await log(`[${task.id}] Starting: ${task.name}`);
@@ -155,7 +157,7 @@ async function runTask(
   let success = true;
 
   try {
-    output = await runAgentPrompt(systemPrompt, task.prompt, task.id, openrouterKey);
+    output = await runAgentPrompt(systemPrompt, task.prompt, task.id, openrouterKey, shellAllowlist);
     await log(`[${task.id}] Completed. Output length: ${output.length} chars`);
   } catch (err: any) {
     success = false;
@@ -234,7 +236,9 @@ async function registerTasks(
   tasks: ScheduledTask[],
   systemPrompt: string,
   telegramToken: string | undefined,
-  telegramChatId: number | undefined
+  telegramChatId: number | undefined,
+  openrouterKey?: string,
+  shellAllowlist?: string[]
 ): Promise<number> {
   // Stop and clear existing cron jobs
   for (const [id, job] of activeCronJobs) {
@@ -255,7 +259,7 @@ async function registerTasks(
     const job = schedule(task.schedule, async () => {
       // Each invocation runs independently; errors don't affect other tasks
       try {
-        await runTask(task, systemPrompt, telegramToken, telegramChatId);
+        await runTask(task, systemPrompt, telegramToken, telegramChatId, openrouterKey, shellAllowlist);
       } catch (err: any) {
         // Catch any unexpected errors at the top level so the scheduler stays alive
         await log(`[${task.id}] Unexpected top-level error: ${err?.message ?? String(err)}`);
@@ -282,6 +286,7 @@ async function main(): Promise<void> {
   const telegramToken = config.telegram?.token;
   const telegramChatId = config.telegram?.allowedUsers?.[0]; // notify the first allowed user
   const openrouterKey = config.openrouterKey;
+  const shellAllowlist = config.shellAllowlist;
 
   if (!telegramToken || !telegramChatId) {
     await log(
@@ -297,7 +302,7 @@ async function main(): Promise<void> {
   const tasks = await loadSchedule();
   await log(`Loaded ${tasks.length} task(s) from ${SCHEDULE_PATH}`);
 
-  const registered = await registerTasks(tasks, systemPrompt, telegramToken, telegramChatId);
+  const registered = await registerTasks(tasks, systemPrompt, telegramToken, telegramChatId, openrouterKey, shellAllowlist);
 
   if (registered === 0) {
     await log("No valid tasks registered — exiting.");
@@ -322,7 +327,7 @@ async function main(): Promise<void> {
     try {
       const newTasks = await loadSchedule();
       await log(`[Scheduler] Loaded ${newTasks.length} task(s) from ${SCHEDULE_PATH}`);
-      const newCount = await registerTasks(newTasks, systemPrompt, telegramToken, telegramChatId);
+      const newCount = await registerTasks(newTasks, systemPrompt, telegramToken, telegramChatId, openrouterKey, shellAllowlist);
       await log(`[Scheduler] Reload complete — ${newCount} task(s) active`);
     } catch (err: any) {
       await log(`[Scheduler] Reload failed — keeping old schedule. Error: ${err?.message ?? String(err)}`);
