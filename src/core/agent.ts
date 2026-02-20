@@ -165,19 +165,24 @@ function trimToLimit(messages: AgentMessage[]): AgentMessage[] {
  * When context exceeds the limit, summarize the entire history with Gemini 2.5 Flash Lite
  * and return ONLY the summary message — no tail, no recent messages.
  *
- * Keeping a tail is unsafe: if those messages alone exceed the token limit
- * (e.g. a few giant shell outputs), we blow up immediately after compaction.
+ * IMPORTANT: transformContext in pi-agent-core only transforms what's sent to the API.
+ * It does NOT update agent.state.messages (the stored history). To prevent an infinite
+ * compaction loop, we must also write the compacted result back into agent.state.messages
+ * via the writeBack callback. Without this, every subsequent turn would re-trigger
+ * compaction immediately since the stored history never shrinks.
  *
  * Result after compaction:
  *   [system prompt]           (unchanged, handled by agent)
  *   [CONTEXT_COMPACTED ...]   (single summary message, that's it)
  *
- * Stored history is untouched — only what gets sent to the API changes.
- *
  * On failure: trimToLimit() drops oldest messages until under the limit.
  * This is always safe — no infinite loop possible.
  */
-async function compactContext(messages: AgentMessage[], openrouterKey?: string): Promise<AgentMessage[]> {
+async function compactContext(
+  messages: AgentMessage[],
+  openrouterKey: string | undefined,
+  writeBack: (compacted: AgentMessage[]) => void,
+): Promise<AgentMessage[]> {
   const charCount = countContextChars(messages);
   if (charCount <= MAX_CONTEXT_CHARS) return messages;
 
@@ -185,7 +190,9 @@ async function compactContext(messages: AgentMessage[], openrouterKey?: string):
 
   if (!openrouterKey) {
     console.warn("[AgentBox] No OpenRouter key configured — falling back to trim.");
-    return trimToLimit(messages);
+    const trimmed = trimToLimit(messages);
+    writeBack(trimmed);
+    return trimmed;
   }
 
   let summary: string;
@@ -193,7 +200,9 @@ async function compactContext(messages: AgentMessage[], openrouterKey?: string):
     summary = await summarizeWithGemini(serializeMessages(messages), openrouterKey);
   } catch (err: any) {
     console.error(`[AgentBox] Compaction failed: ${err.message} — falling back to trim.`);
-    return trimToLimit(messages);
+    const trimmed = trimToLimit(messages);
+    writeBack(trimmed);
+    return trimmed;
   }
 
   const summaryMessage: UserMessage = {
@@ -202,9 +211,14 @@ async function compactContext(messages: AgentMessage[], openrouterKey?: string):
     timestamp: Date.now(),
   };
 
+  const compacted = [summaryMessage];
+
+  // Write back to stored history so future turns don't re-trigger compaction immediately.
+  writeBack(compacted);
+
   console.log(`[AgentBox] Compacted ${messages.length} messages → 1 summary (${summary.length} chars).`);
 
-  return [summaryMessage];
+  return compacted;
 }
 
 export function resolveModel(modelId?: string) {
@@ -228,7 +242,14 @@ export function createAgent(systemPrompt: string, modelId?: string, openrouterKe
       thinkingLevel: "off",
       tools: getTools(),
     },
-    transformContext: (messages) => compactContext(messages, openrouterKey),
+    transformContext: (messages) =>
+      compactContext(messages, openrouterKey, (compacted) => {
+        // Write the compacted history back into agent.state.messages.
+        // pi-agent-core's transformContext only transforms the API payload — it never
+        // updates stored messages. Without this write-back, the stored history keeps
+        // growing and compaction fires on every single subsequent turn (infinite loop).
+        agent.state.messages.splice(0, agent.state.messages.length, ...compacted);
+      }),
     getApiKey: async (provider: string) => {
       if (provider === "anthropic") {
         return (await getApiKey("anthropic")) ?? undefined;
