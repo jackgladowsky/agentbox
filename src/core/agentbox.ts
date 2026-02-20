@@ -22,6 +22,18 @@ export type MessageSource = {
 
 export type AgentResponseCallback = (event: AgentEvent, source: MessageSource) => void;
 
+/**
+ * Watchdog inactivity timeout.
+ *
+ * The timer resets on every agent event (tool calls, text deltas, turn boundaries,
+ * etc.) and only fires if the stream goes completely silent. This means a task that
+ * runs for hours is fine as long as it keeps emitting events — the timeout only
+ * triggers when the LLM provider drops the connection without closing the stream.
+ *
+ * 5 minutes of silence = dead stream. Healthy agents always produce events.
+ */
+const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000;
+
 class AgentBox {
   private agent: Agent | null = null;
   private listeners = new Map<string, AgentResponseCallback>();
@@ -88,10 +100,38 @@ class AgentBox {
 
   private async _runPrompt(content: string, source: MessageSource): Promise<void> {
     const agent = this.instance;
+
     await new Promise<void>((resolve, reject) => {
+      // Watchdog: fires if no agent event arrives within INACTIVITY_TIMEOUT_MS.
+      // Resets on every event so long-running tasks with active tool calls are fine.
+      // Only triggers when the stream goes completely silent (dead connection).
+      let watchdog: NodeJS.Timeout | null = null;
+
+      const resetWatchdog = () => {
+        if (watchdog) clearTimeout(watchdog);
+        watchdog = setTimeout(() => {
+          console.error(
+            `[AgentBox] Stream silent for ${INACTIVITY_TIMEOUT_MS / 1000}s — ` +
+            `aborting hung agent. (${source.id})`
+          );
+          unsubscribe();
+          this.abort();
+          reject(new Error(
+            `Agent stream inactive for ${INACTIVITY_TIMEOUT_MS / 1000}s — ` +
+            `possible dropped connection. (${source.id})`
+          ));
+        }, INACTIVITY_TIMEOUT_MS);
+      };
+
       const unsubscribe = agent.subscribe((event: AgentEvent) => {
+        // Every event — text delta, tool call, turn boundary, anything — proves
+        // the stream is alive. Reset the watchdog.
+        resetWatchdog();
+
         for (const cb of this.listeners.values()) cb(event, source);
+
         if (event.type === "agent_end") {
+          if (watchdog) clearTimeout(watchdog);
           unsubscribe();
           if (agent.state.error) {
             console.error(`[AgentBox] Agent error (${source.id}): ${agent.state.error}`);
@@ -99,7 +139,13 @@ class AgentBox {
           resolve();
         }
       });
+
+      // Start the watchdog immediately — if prompt() itself hangs before emitting
+      // agent_start, we still want to detect it.
+      resetWatchdog();
+
       agent.prompt(content).catch(err => {
+        if (watchdog) clearTimeout(watchdog);
         unsubscribe();
         reject(err);
       });
