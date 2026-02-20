@@ -34,9 +34,12 @@ class AgentBox {
     const { systemPrompt, agentName } = await loadWorkspaceContext();
     const config = await loadAgentConfig(agentName);
     this._name = config.name ?? agentName;
-    this.agent = createAgent(systemPrompt, config.model, config.openrouterKey);
+    this.agent = createAgent(systemPrompt, config.model, config.openrouterKey, config.shellAllowlist);
     const compactionModel = config.openrouterKey ? "openrouter/google/gemini-2.5-flash-lite" : "trim fallback";
-    console.log(`[AgentBox] ${this._name} initialized — ${this.agent.state.model.id} (compaction: ${compactionModel})`);
+    const allowlistInfo = config.shellAllowlist
+      ? `shell allowlist: [${config.shellAllowlist.join(", ")}]`
+      : "shell: default-deny (no allowlist)";
+    console.log(`[AgentBox] ${this._name} initialized — ${this.agent.state.model.id} (compaction: ${compactionModel}, ${allowlistInfo})`);
 
     // Restore context from last session if a fresh checkpoint exists.
     const saved = await loadCheckpoint();

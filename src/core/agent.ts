@@ -12,6 +12,7 @@ import {
   type UserMessage,
 } from "@mariozechner/pi-ai";
 import { getApiKey } from "./auth.js";
+import { loadAgentConfig } from "./config.js";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { readFile, writeFile, readdir, stat, mkdir } from "fs/promises";
@@ -215,18 +216,48 @@ export function resolveModel(modelId?: string) {
 }
 
 /**
+ * Extract the base command name from a shell command string.
+ * Handles leading whitespace, env var prefixes (KEY=val cmd), and sudo.
+ *
+ * Examples:
+ *   "git status"         → "git"
+ *   "  npm run build"    → "npm"
+ *   "FOO=bar node app"   → "node"
+ *   "sudo systemctl ..." → "sudo"
+ */
+function extractBaseCommand(command: string): string {
+  const trimmed = command.trim();
+  const tokens = trimmed.split(/\s+/);
+  // Skip leading KEY=value tokens
+  for (const token of tokens) {
+    if (!/^[A-Z_][A-Z0-9_]*=/.test(token)) {
+      return token;
+    }
+  }
+  return tokens[0] ?? "";
+}
+
+/**
  * Create an AgentBox agent with the standard tool set.
  * Automatically appends the compaction instruction to the system prompt.
  * Pass openrouterKey to enable AI-powered compaction (Gemini 2.5 Flash Lite).
  * Without it, compaction falls back to trimming oldest messages.
+ *
+ * shellAllowlist: if provided, only commands whose base name is in the list
+ * will be executed. If omitted, all shell commands are denied (default-deny).
  */
-export function createAgent(systemPrompt: string, modelId?: string, openrouterKey?: string): Agent {
+export function createAgent(
+  systemPrompt: string,
+  modelId?: string,
+  openrouterKey?: string,
+  shellAllowlist?: string[]
+): Agent {
   const agent = new Agent({
     initialState: {
       systemPrompt: systemPrompt + COMPACTION_SYSTEM_INSTRUCTION,
       model: resolveModel(modelId),
       thinkingLevel: "off",
-      tools: getTools(),
+      tools: getTools(shellAllowlist),
     },
     transformContext: (messages) => compactContext(messages, openrouterKey),
     getApiKey: async (provider: string) => {
@@ -242,8 +273,8 @@ export function createAgent(systemPrompt: string, modelId?: string, openrouterKe
 
 // ── Tools ─────────────────────────────────────────────────────────────────────
 
-function getTools(): AgentTool<any>[] {
-  return [shellTool, readFileTool, writeFileTool, listDirTool];
+function getTools(shellAllowlist?: string[]): AgentTool<any>[] {
+  return [makeShellTool(shellAllowlist), readFileTool, writeFileTool, listDirTool];
 }
 
 const ok = (text: string) => ({ content: [{ type: "text" as const, text }], details: {} });
@@ -265,27 +296,45 @@ const ShellParams = Type.Object({
   timeout: Type.Optional(Type.Number({ description: "Timeout in ms (default: 30000)" })),
 });
 
-const shellTool: AgentTool<typeof ShellParams> = {
-  name: "shell",
-  label: "Execute Shell Command",
-  description: "Execute a shell command and return stdout/stderr. Use for system operations, running scripts, etc.",
-  parameters: ShellParams,
-  execute: async (_id, params) => {
-    const { command, workdir, timeout = 30000 } = params;
-    try {
-      const { stdout, stderr } = await execAsync(command, {
-        cwd: workdir,
-        timeout,
-        maxBuffer: 10 * 1024 * 1024,
-      });
-      const output = [stdout, stderr].filter(Boolean).join("\n---stderr---\n") || "(no output)";
-      return ok(truncateOutput(output));
-    } catch (err: any) {
-      const output = `Error: ${[err.stdout, err.stderr, err.message].filter(Boolean).join("\n")}`;
-      return ok(truncateOutput(output));
-    }
-  },
-};
+/**
+ * Build the shell tool. If shellAllowlist is provided, enforces it as a default-deny
+ * policy: only base commands explicitly listed are executed. If shellAllowlist is
+ * undefined, ALL commands are denied (fail-safe default).
+ */
+function makeShellTool(shellAllowlist?: string[]): AgentTool<typeof ShellParams> {
+  return {
+    name: "shell",
+    label: "Execute Shell Command",
+    description: "Execute a shell command and return stdout/stderr. Use for system operations, running scripts, etc.",
+    parameters: ShellParams,
+    execute: async (_id, params) => {
+      const { command, workdir, timeout = 30000 } = params;
+
+      // Default-deny: if no allowlist is configured, block everything.
+      if (!shellAllowlist) {
+        return ok(`Error: Shell execution is disabled. No shellAllowlist is configured in agent config.`);
+      }
+
+      const base = extractBaseCommand(command);
+      if (!shellAllowlist.includes(base)) {
+        return ok(`Error: Command not in allowlist. "${base}" is not permitted. Allowed: ${shellAllowlist.join(", ")}`);
+      }
+
+      try {
+        const { stdout, stderr } = await execAsync(command, {
+          cwd: workdir,
+          timeout,
+          maxBuffer: 10 * 1024 * 1024,
+        });
+        const output = [stdout, stderr].filter(Boolean).join("\n---stderr---\n") || "(no output)";
+        return ok(truncateOutput(output));
+      } catch (err: any) {
+        const output = `Error: ${[err.stdout, err.stderr, err.message].filter(Boolean).join("\n")}`;
+        return ok(truncateOutput(output));
+      }
+    },
+  };
+}
 
 const ReadFileParams = Type.Object({
   path: Type.String({ description: "Path to the file to read" }),
