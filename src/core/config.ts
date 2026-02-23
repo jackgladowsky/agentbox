@@ -28,6 +28,9 @@ export interface AgentConfig {
   model?: string;
   /** Telegram connection config — token lives in secrets.json */
   telegram?: TelegramConfig;
+  /** IANA timezone string for the agent (e.g. "America/New_York"). Defaults to system timezone. */
+  timezone?: string;
+
   /** OpenRouter API key — loaded from secrets.json, used for compaction */
   openrouterKey?: string;
 }

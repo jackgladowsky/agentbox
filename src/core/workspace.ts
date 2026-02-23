@@ -9,14 +9,35 @@ export interface WorkspaceContext {
 }
 
 /**
+ * Get the current date/time formatted for the agent's timezone.
+ * Falls back to the system timezone if none is configured.
+ */
+function getCurrentDatetime(timezone?: string): string {
+  const tz = timezone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const now = new Date();
+  const formatted = now.toLocaleString("en-US", {
+    timeZone: tz,
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZoneName: "short",
+  });
+  return formatted;
+}
+
+/**
  * Build the core preamble — establishes what AgentBox is and the agent's environment.
  */
-function buildPreamble(agentName: string): string {
+function buildPreamble(agentName: string, timezone?: string): string {
   const user = userInfo().username;
   const host = hostname();
   const plat = platform();
   const architecture = arch();
   const cwd = process.cwd();
+  const datetime = getCurrentDatetime(timezone);
 
   return `# AgentBox
 
@@ -39,6 +60,7 @@ You don't have to.
 - **Working Directory:** ${cwd}
 - **Shell:** Full access via \`shell\` tool
 - **Filesystem:** Full read/write access
+- **Date/Time:** ${datetime}
 
 ## Your Tools
 
@@ -99,8 +121,9 @@ async function loadNotes(name: string): Promise<{ filename: string; content: str
  */
 export async function loadWorkspaceContext(): Promise<WorkspaceContext> {
   const agentName = getAgentName();
+  const config = await loadAgentConfig(agentName);
 
-  let systemPrompt = buildPreamble(agentName);
+  let systemPrompt = buildPreamble(agentName, config.timezone);
 
   // Load SOUL.md from agent dir
   const soul = await loadSoul(agentName);
