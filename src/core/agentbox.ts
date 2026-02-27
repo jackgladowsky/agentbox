@@ -16,8 +16,6 @@ export type MessageSource = {
   id: string;
   /** Human-readable label shown in logs */
   label: string;
-  /** If true, responses are not forwarded to the user */
-  internal?: boolean;
 };
 
 export type AgentResponseCallback = (event: AgentEvent, source: MessageSource) => void;
@@ -163,22 +161,6 @@ class AgentBox {
   setModel(modelId: string): void { this.agent?.setModel({ ...this.instance.state.model, id: modelId }); }
   setThinkingLevel(level: "off" | "low" | "medium" | "high"): void { this.agent?.setThinkingLevel(level); }
 
-  /**
-   * Signal that a real user message has arrived.
-   * Called by connection adapters so the memory module can reset its idle timer.
-   * The memory module registers its handler via onActivity().
-   */
-  markActivity(): void {
-    for (const cb of this._activityListeners) cb();
-  }
-
-  private _activityListeners: Array<() => void> = [];
-
-  /** Register a callback that fires on every markActivity() call. Returns unsubscribe fn. */
-  onActivity(cb: () => void): () => void {
-    this._activityListeners.push(cb);
-    return () => { this._activityListeners = this._activityListeners.filter(l => l !== cb); };
-  }
 }
 
 // Singleton export

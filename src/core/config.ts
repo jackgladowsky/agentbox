@@ -2,12 +2,24 @@
  * Agent configuration loader.
  *
  * Each agent lives in ~/.agentbox/<agent-name>/
- *   config.json   — name, model, non-sensitive settings (safe to commit)
- *   secrets.json  — tokens, API keys (gitignored, never commit)
+ *   config.json   — all settings including secrets (gitignore this file)
  *   SOUL.md       — personality / system prompt
  *   notes/        — persistent memory (read by workspace.ts)
+ *   memory/       — daily session summaries
  *
  * Agent is selected via AGENT env var (default: "agent").
+ *
+ * config.json shape:
+ * {
+ *   "name": "Rex",
+ *   "timezone": "America/New_York",
+ *   "model": "claude-sonnet-4-6",          // optional
+ *   "openrouterKey": "sk-or-...",           // optional, for compaction
+ *   "telegram": {
+ *     "token": "...",
+ *     "allowedUsers": [123456789]
+ *   }
+ * }
  */
 
 import { readFile } from "fs/promises";
@@ -26,55 +38,26 @@ export interface AgentConfig {
   name: string;
   /** Anthropic model ID */
   model?: string;
-  /** Telegram connection config — token lives in secrets.json */
+  /** Telegram connection config */
   telegram?: TelegramConfig;
-  /** IANA timezone string for the agent (e.g. "America/New_York"). Defaults to system timezone. */
+  /** IANA timezone string (e.g. "America/New_York"). Defaults to system timezone. */
   timezone?: string;
-
-  /** OpenRouter API key — loaded from secrets.json, used for compaction */
+  /** OpenRouter API key for compaction */
   openrouterKey?: string;
 }
 
-export interface AgentSecrets {
-  /** Telegram bot token */
-  telegramToken?: string;
-  /** Telegram allowed user IDs (can also be in config.json if not sensitive) */
-  telegramAllowedUsers?: number[];
-  /** OpenRouter API key for cheap/large-context model calls (e.g. compaction) */
-  openrouterKey?: string;
-}
-
-/**
- * Get the agent name from AGENT env var, or fall back to "agent".
- */
 export function getAgentName(): string {
   return process.env.AGENT ?? "agent";
 }
 
-/**
- * Path to the agent's home directory: ~/.agentbox/<name>/
- */
 export function agentDir(name: string = getAgentName()): string {
   return join(AGENTBOX_DIR, name);
 }
 
-/**
- * Load secrets.json for the given agent (returns empty object if missing).
- */
-async function loadAgentSecrets(name: string): Promise<AgentSecrets> {
-  const secretsPath = join(agentDir(name), "secrets.json");
-  try {
-    const raw = await readFile(secretsPath, "utf-8");
-    return JSON.parse(raw);
-  } catch {
-    return {};
-  }
+export function notesDir(name: string = getAgentName()): string {
+  return join(agentDir(name), "notes");
 }
 
-/**
- * Validate an AgentConfig and return an array of error strings.
- * An empty array means the config is valid.
- */
 export function validateAgentConfig(config: AgentConfig): string[] {
   const errors: string[] = [];
 
@@ -102,9 +85,8 @@ export function validateAgentConfig(config: AgentConfig): string[] {
 }
 
 /**
- * Load config.json for the given agent, merged with secrets.json.
- * Tokens from secrets.json take precedence over anything in config.json.
- * Throws with a helpful message if config.json is missing.
+ * Load config.json for the given agent.
+ * All settings (including secrets) live in one file — gitignore it.
  */
 export async function loadAgentConfig(name: string = getAgentName()): Promise<AgentConfig> {
   const configPath = join(agentDir(name), "config.json");
@@ -116,26 +98,18 @@ export async function loadAgentConfig(name: string = getAgentName()): Promise<Ag
   } catch {
     throw new Error(
       `No config found for agent "${name}" at ${configPath}\n\n` +
-      `Run: agentbox-create ${name}\n\n` +
-      `Or create manually:\n` +
+      `Create it:\n` +
       `  mkdir -p ~/.agentbox/${name}\n` +
-      `  echo '{"name":"${name}"}' > ~/.agentbox/${name}/config.json\n` +
-      `  echo '{"telegramToken":"YOUR_TOKEN","telegramAllowedUsers":[YOUR_ID]}' > ~/.agentbox/${name}/secrets.json`
+      `  cat > ~/.agentbox/${name}/config.json << 'EOF'\n` +
+      `  {\n` +
+      `    "name": "${name}",\n` +
+      `    "telegram": {\n` +
+      `      "token": "YOUR_BOT_TOKEN",\n` +
+      `      "allowedUsers": [YOUR_TELEGRAM_USER_ID]\n` +
+      `    }\n` +
+      `  }\n` +
+      `  EOF`
     );
-  }
-
-  // Merge secrets — values from secrets.json override config.json
-  const secrets = await loadAgentSecrets(name);
-
-  if (secrets.telegramToken) {
-    config.telegram = {
-      token: secrets.telegramToken,
-      allowedUsers: secrets.telegramAllowedUsers ?? config.telegram?.allowedUsers ?? [],
-    };
-  }
-
-  if (secrets.openrouterKey) {
-    config.openrouterKey = secrets.openrouterKey;
   }
 
   const errors = validateAgentConfig(config);
@@ -149,9 +123,6 @@ export async function loadAgentConfig(name: string = getAgentName()): Promise<Ag
   return config;
 }
 
-/**
- * Load SOUL.md for the given agent (returns empty string if missing).
- */
 export async function loadSoul(name: string = getAgentName()): Promise<string> {
   const soulPath = join(agentDir(name), "SOUL.md");
   try {
@@ -159,11 +130,4 @@ export async function loadSoul(name: string = getAgentName()): Promise<string> {
   } catch {
     return "";
   }
-}
-
-/**
- * Path to the agent's notes directory.
- */
-export function notesDir(name: string = getAgentName()): string {
-  return join(agentDir(name), "notes");
 }

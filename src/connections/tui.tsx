@@ -127,8 +127,6 @@ function AgentBoxTUI() {
       }
     });
 
-    // Signal activity so the memory module resets its idle timer.
-    agentbox.markActivity();
 
     agentbox.prompt(trimmed, TUI_SOURCE).catch(err => {
       unsubscribe();

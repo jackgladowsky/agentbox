@@ -62,12 +62,10 @@ async function downloadFile(bot: Bot, fileId: string, filename: string): Promise
 
 // ── Type helpers ──────────────────────────────────────────────────────────────
 
-/** Type guard: narrow AgentMessage to AssistantMessage. */
 function isAssistantMessage(msg: AgentMessage): msg is AssistantMessage {
   return (msg as AssistantMessage).role === "assistant";
 }
 
-/** Extract plain text from an AssistantMessage's content array. */
 function extractAssistantText(msg: AssistantMessage): string {
   return msg.content
     .filter((c): c is TextContent => c.type === "text")
@@ -93,9 +91,6 @@ async function buildAndRestart(ctx: Context): Promise<void> {
   }
 
   await ctx.reply("✓ Build succeeded. Restarting...");
-
-  // Give Telegram time to send the message before we exit.
-  // SIGTERM handler will fire and save the checkpoint.
   setTimeout(() => {
     console.log("[Telegram] restarting via systemd");
     process.kill(process.pid, "SIGTERM");
@@ -127,9 +122,7 @@ export async function startTelegram(): Promise<void> {
   const allowed = new Set(allowedUsers);
   const displayName = config.name ?? agentName;
 
-  // ── Graceful shutdown: save checkpoint on SIGTERM ──────────────────────────
-  // systemd sends SIGTERM before restarting (e.g. after /update).
-  // We save messages to disk so context survives the restart.
+  // Save checkpoint on SIGTERM so context survives restarts
   process.once("SIGTERM", async () => {
     console.log("[Telegram] SIGTERM received — saving checkpoint...");
     try {
@@ -141,7 +134,7 @@ export async function startTelegram(): Promise<void> {
     process.exit(0);
   });
 
-  // Auth middleware — drop everything from non-allowed users
+  // Auth middleware
   bot.use(async (ctx, next) => {
     const userId = ctx.from?.id;
     if (!userId || !allowed.has(userId)) {
@@ -172,9 +165,8 @@ export async function startTelegram(): Promise<void> {
     await ctx.reply(HELP_TEXT, { parse_mode: "Markdown" });
   });
 
-  // Shared reset handler — clears history, replies immediately, no restart needed
   async function handleReset(ctx: Context) {
-    agentbox.clearMessages(); // also clears checkpoint
+    agentbox.clearMessages();
     await ctx.reply("✓ History cleared. Fresh session started.");
   }
 
@@ -184,7 +176,6 @@ export async function startTelegram(): Promise<void> {
 
   bot.command("status", async (ctx) => {
     const state = agentbox.instance.state;
-    // Get current git commit
     let commit = "unknown";
     try {
       const { stdout } = await execAsync("git rev-parse --short HEAD", { cwd: process.cwd() });
@@ -216,7 +207,6 @@ export async function startTelegram(): Promise<void> {
       agentbox.setThinkingLevel("off");
       await ctx.reply("✓ Thinking: off");
     } else {
-      // toggle if no arg
       const current = agentbox.instance.state.thinkingLevel ?? "off";
       const next = current === "off" ? "medium" : "off";
       agentbox.setThinkingLevel(next);
@@ -229,15 +219,12 @@ export async function startTelegram(): Promise<void> {
     try {
       const { stdout: pullOut } = await execAsync("git pull --ff-only", { cwd: process.cwd() });
       const summary = pullOut.trim();
-
       if (summary.includes("Already up to date")) {
         await ctx.reply("✓ Already up to date. Rebuilding anyway...");
       } else {
         await ctx.reply(`✓ Pulled:\n${summary}`);
       }
-
       await buildAndRestart(ctx);
-
     } catch (err: any) {
       await ctx.reply(`⚠️ Update failed:\n${err.message}`);
     }
@@ -264,9 +251,6 @@ export async function startTelegram(): Promise<void> {
       label: `Telegram from ${ctx.from?.username ?? ctx.from?.id}`,
     };
 
-    // Signal activity so the memory module resets its idle timer.
-    agentbox.markActivity();
-
     console.log(`[Telegram] ${ctx.from?.username}: ${content.slice(0, 80)}`);
 
     const sentMsg = await ctx.reply("…");
@@ -291,9 +275,6 @@ export async function startTelegram(): Promise<void> {
 
     const unsubscribe = agentbox.subscribe(`telegram-reply:${sourceId(ctx)}`, async (event: AgentEvent, evtSource: MessageSource) => {
       if (evtSource.id !== source.id) return;
-
-      // Suppress internal (e.g. memory write-back) responses from being forwarded to the user.
-      if (evtSource.internal) return;
 
       if (event.type === "message_update" && isAssistantMessage(event.message)) {
         const text = extractAssistantText(event.message);
@@ -335,13 +316,11 @@ export async function startTelegram(): Promise<void> {
     });
   }
 
-  // Plain text
   bot.on("message:text", async (ctx) => {
     if (ctx.message.text.startsWith("/")) return;
     await handleMessage(ctx, ctx.message.text);
   });
 
-  // Photos
   bot.on("message:photo", async (ctx) => {
     const photo = ctx.message.photo.at(-1)!;
     const caption = ctx.message.caption ?? "";
@@ -353,7 +332,6 @@ export async function startTelegram(): Promise<void> {
     }
   });
 
-  // Documents
   bot.on("message:document", async (ctx) => {
     const doc = ctx.message.document;
     const caption = ctx.message.caption ?? "";
@@ -365,7 +343,6 @@ export async function startTelegram(): Promise<void> {
     }
   });
 
-  // Voice
   bot.on("message:voice", async (ctx) => {
     try {
       const localPath = await downloadFile(bot, ctx.message.voice.file_id, `voice_${Date.now()}.ogg`);
