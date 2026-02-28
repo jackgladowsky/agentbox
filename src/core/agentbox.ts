@@ -2,14 +2,15 @@
  * AgentBox — the singleton agent instance.
  *
  * All connections (Telegram, TUI, etc.) talk to this one agent.
- * Conversation history is shared across all connections.
+ * Session continuity via Claude Agent SDK session IDs.
  */
 
-import { type Agent, type AgentEvent } from "@mariozechner/pi-agent-core";
-import { createAgent } from "./agent.js";
+import { runAgent, type AgentEvent, type AgentEventCallback } from "./agent.js";
 import { loadWorkspaceContext } from "./workspace.js";
 import { loadAgentConfig } from "./config.js";
-import { loadCheckpoint, clearCheckpoint } from "./checkpoint.js";
+import { loadSession, saveSession, clearSession as clearSessionFile } from "./checkpoint.js";
+
+export type { AgentEvent } from "./agent.js";
 
 export type MessageSource = {
   /** Unique ID for routing replies back — e.g. telegram:123456, tui:local */
@@ -23,55 +24,48 @@ export type AgentResponseCallback = (event: AgentEvent, source: MessageSource) =
 /**
  * Watchdog inactivity timeout.
  *
- * The timer resets on every agent event (tool calls, text deltas, turn boundaries,
- * etc.) and only fires if the stream goes completely silent. This means a task that
- * runs for hours is fine as long as it keeps emitting events — the timeout only
- * triggers when the LLM provider drops the connection without closing the stream.
- *
- * 5 minutes of silence = dead stream. Healthy agents always produce events.
+ * Resets on every agent event. Only fires if the stream goes completely
+ * silent — 5 minutes of silence means dead stream.
  */
 const INACTIVITY_TIMEOUT_MS = 5 * 60 * 1000;
 
 class AgentBox {
-  private agent: Agent | null = null;
+  private systemPrompt = "";
+  private _sessionId: string | null = null;
+  private _model: string | undefined;
   private listeners = new Map<string, AgentResponseCallback>();
   private queue: Array<{ content: string; source: MessageSource }> = [];
   private busy = false;
   private _name = "agent";
+  private _initialized = false;
+  private abortController: AbortController | null = null;
 
   async init(): Promise<void> {
-    if (this.agent) return;
+    if (this._initialized) return;
     const { systemPrompt, agentName } = await loadWorkspaceContext();
     const config = await loadAgentConfig(agentName);
     this._name = config.name ?? agentName;
-    this.agent = createAgent(systemPrompt, config.model, config.openrouterKey);
-    const compactionModel = config.openrouterKey ? "openrouter/google/gemini-2.5-flash-lite" : "trim fallback";
-    console.log(`[AgentBox] ${this._name} initialized — ${this.agent.state.model.id} (compaction: ${compactionModel})`);
+    this._model = config.model;
+    this.systemPrompt = systemPrompt;
 
-    // Restore context from last session if a fresh checkpoint exists.
-    const saved = await loadCheckpoint();
-    if (saved && saved.length > 0) {
-      this.agent.replaceMessages(saved);
-      console.log(`[AgentBox] Context restored from checkpoint (${saved.length} messages).`);
-    }
+    // Restore session from last run
+    this._sessionId = await loadSession();
+
+    this._initialized = true;
+    const sessionInfo = this._sessionId ? `session: ${this._sessionId}` : "new session";
+    console.log(`[AgentBox] ${this._name} initialized (${sessionInfo})`);
   }
 
   get name(): string {
     return this._name;
   }
 
-  get instance(): Agent {
-    if (!this.agent) throw new Error("AgentBox not initialized — call agentbox.init() first");
-    return this.agent;
+  get modelId(): string {
+    return this._model ?? "claude-sonnet-4-6";
   }
 
-  get messageCount(): number {
-    return this.agent?.state.messages.length ?? 0;
-  }
-
-  /** Current messages — used for checkpoint saving on exit. */
-  get messages() {
-    return this.agent?.state.messages ?? [];
+  get sessionId(): string | null {
+    return this._sessionId;
   }
 
   /** Subscribe to all agent events tagged with originating source. Returns unsubscribe fn. */
@@ -97,70 +91,66 @@ class AgentBox {
   }
 
   private async _runPrompt(content: string, source: MessageSource): Promise<void> {
-    const agent = this.instance;
+    if (!this._initialized) throw new Error("AgentBox not initialized — call agentbox.init() first");
 
-    await new Promise<void>((resolve, reject) => {
-      // Watchdog: fires if no agent event arrives within INACTIVITY_TIMEOUT_MS.
-      // Resets on every event so long-running tasks with active tool calls are fine.
-      // Only triggers when the stream goes completely silent (dead connection).
-      let watchdog: NodeJS.Timeout | null = null;
+    this.abortController = new AbortController();
 
-      const resetWatchdog = () => {
-        if (watchdog) clearTimeout(watchdog);
-        watchdog = setTimeout(() => {
-          console.error(
-            `[AgentBox] Stream silent for ${INACTIVITY_TIMEOUT_MS / 1000}s — ` +
-            `aborting hung agent. (${source.id})`
-          );
-          unsubscribe();
-          this.abort();
-          reject(new Error(
-            `Agent stream inactive for ${INACTIVITY_TIMEOUT_MS / 1000}s — ` +
-            `possible dropped connection. (${source.id})`
-          ));
-        }, INACTIVITY_TIMEOUT_MS);
-      };
+    let watchdog: NodeJS.Timeout | null = null;
 
-      const unsubscribe = agent.subscribe((event: AgentEvent) => {
-        // Every event — text delta, tool call, turn boundary, anything — proves
-        // the stream is alive. Reset the watchdog.
-        resetWatchdog();
+    const resetWatchdog = () => {
+      if (watchdog) clearTimeout(watchdog);
+      watchdog = setTimeout(() => {
+        console.error(
+          `[AgentBox] Stream silent for ${INACTIVITY_TIMEOUT_MS / 1000}s — ` +
+          `aborting. (${source.id})`
+        );
+        this.abortController?.abort();
+      }, INACTIVITY_TIMEOUT_MS);
+    };
 
-        for (const cb of this.listeners.values()) cb(event, source);
+    resetWatchdog();
 
-        if (event.type === "agent_end") {
-          if (watchdog) clearTimeout(watchdog);
-          unsubscribe();
-          if (agent.state.error) {
-            console.error(`[AgentBox] Agent error (${source.id}): ${agent.state.error}`);
-          }
-          resolve();
-        }
+    try {
+      const { sessionId } = await runAgent({
+        prompt: content,
+        systemPrompt: this.systemPrompt,
+        sessionId: this._sessionId ?? undefined,
+        model: this._model,
+        abortSignal: this.abortController.signal,
+        onEvent: (event) => {
+          resetWatchdog();
+          for (const cb of this.listeners.values()) cb(event, source);
+        },
       });
 
-      // Start the watchdog immediately — if prompt() itself hangs before emitting
-      // agent_start, we still want to detect it.
-      resetWatchdog();
-
-      agent.prompt(content).catch(err => {
-        if (watchdog) clearTimeout(watchdog);
-        unsubscribe();
-        reject(err);
-      });
-    });
+      // Persist session ID for next time
+      if (sessionId) {
+        this._sessionId = sessionId;
+        await saveSession(sessionId).catch(err =>
+          console.error("[AgentBox] Failed to save session:", err)
+        );
+      }
+    } catch (err: any) {
+      console.error(`[AgentBox] Agent error (${source.id}): ${err.message}`);
+      throw err;
+    } finally {
+      if (watchdog) clearTimeout(watchdog);
+      this.abortController = null;
+    }
   }
 
-  abort(): void { this.agent?.abort(); }
-
-  clearMessages(): void {
-    this.agent?.clearMessages();
-    // Discard checkpoint so the next restart also starts fresh.
-    clearCheckpoint().catch(() => {});
+  abort(): void {
+    this.abortController?.abort();
   }
 
-  setModel(modelId: string): void { this.agent?.setModel({ ...this.instance.state.model, id: modelId }); }
-  setThinkingLevel(level: "off" | "low" | "medium" | "high"): void { this.agent?.setThinkingLevel(level); }
+  async clearSession(): Promise<void> {
+    this._sessionId = null;
+    await clearSessionFile();
+  }
 
+  setModel(modelId: string): void {
+    this._model = modelId;
+  }
 }
 
 // Singleton export

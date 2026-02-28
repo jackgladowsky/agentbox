@@ -1,71 +1,48 @@
 /**
- * Context checkpoint — persist message history across service restarts.
+ * Session persistence — maintains conversation continuity across restarts.
  *
- * On SIGTERM (e.g. /update restart), we serialize the agent's messages to disk.
- * On startup, if a recent checkpoint exists, we restore it so context survives.
+ * The Claude Agent SDK manages conversation state via session IDs.
+ * We persist the session ID to disk so restarts resume the last session.
  *
- * Checkpoint file: ~/.agentbox/<agent>/checkpoint.json
- * Considered "fresh" if written within MAX_CHECKPOINT_AGE_MS (2 hours by default).
- *
- * On /clear or /reset: call clearCheckpoint() to discard the saved history.
+ * File: ~/.agentbox/<agent>/session.json
  */
 
-import { readFile, writeFile, unlink } from "fs/promises";
-import { join } from "path";
+import { readFile, writeFile, unlink, mkdir } from "fs/promises";
+import { join, dirname } from "path";
 import { agentDir } from "./config.js";
-import type { AgentMessage } from "@mariozechner/pi-agent-core";
 
-// Max age of a checkpoint before we treat it as stale and discard it.
-const MAX_CHECKPOINT_AGE_MS = 2 * 60 * 60 * 1000; // 2 hours
-
-interface Checkpoint {
+interface SessionData {
+  sessionId: string;
   savedAt: number;
-  messages: AgentMessage[];
 }
 
-function checkpointPath(): string {
-  return join(agentDir(), "checkpoint.json");
+function sessionPath(): string {
+  return join(agentDir(), "session.json");
 }
 
-/**
- * Save current messages to disk.
- * Called before process exit so restarts don't wipe context.
- */
-export async function saveCheckpoint(messages: AgentMessage[]): Promise<void> {
-  if (messages.length === 0) return;
-  const checkpoint: Checkpoint = { savedAt: Date.now(), messages };
-  await writeFile(checkpointPath(), JSON.stringify(checkpoint), "utf-8");
-  console.log(`[Checkpoint] Saved ${messages.length} messages.`);
+export async function saveSession(sessionId: string): Promise<void> {
+  const data: SessionData = { sessionId, savedAt: Date.now() };
+  const path = sessionPath();
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, JSON.stringify(data), "utf-8");
+  console.log(`[Session] Saved: ${sessionId}`);
 }
 
-/**
- * Load a fresh checkpoint, if one exists.
- * Returns null if no checkpoint, or if it's older than MAX_CHECKPOINT_AGE_MS.
- */
-export async function loadCheckpoint(): Promise<AgentMessage[] | null> {
+export async function loadSession(): Promise<string | null> {
   try {
-    const raw = await readFile(checkpointPath(), "utf-8");
-    const checkpoint: Checkpoint = JSON.parse(raw);
-    const age = Date.now() - checkpoint.savedAt;
-    if (age > MAX_CHECKPOINT_AGE_MS) {
-      console.log(`[Checkpoint] Stale (${Math.round(age / 60000)}m old) — discarding.`);
-      await clearCheckpoint();
-      return null;
-    }
-    console.log(`[Checkpoint] Restored ${checkpoint.messages.length} messages (${Math.round(age / 1000)}s old).`);
-    return checkpoint.messages;
+    const raw = await readFile(sessionPath(), "utf-8");
+    const data: SessionData = JSON.parse(raw);
+    console.log(`[Session] Loaded: ${data.sessionId}`);
+    return data.sessionId;
   } catch {
-    return null; // No checkpoint or parse error — start fresh
+    return null;
   }
 }
 
-/**
- * Delete the checkpoint file.
- * Call this when the user explicitly clears history (/reset, /clear, /new).
- */
-export async function clearCheckpoint(): Promise<void> {
+export async function clearSession(): Promise<void> {
   try {
-    await unlink(checkpointPath());
+    await unlink(sessionPath());
+    console.log("[Session] Cleared.");
   } catch {
     // Doesn't exist — fine
   }

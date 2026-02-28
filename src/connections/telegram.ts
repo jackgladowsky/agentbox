@@ -7,8 +7,8 @@
  * Features:
  * - Streaming responses with live message edits (feels like typing)
  * - File/image/voice downloads from Telegram → agent (saves to /tmp)
- * - /clear, /reset, /new, /model, /thinking, /status, /update, /build, /help commands
- * - Context checkpoint: saves messages on SIGTERM, restores on startup
+ * - /clear, /reset, /new, /model, /status, /update, /build, /help commands
+ * - Session continuity via Claude Agent SDK session IDs
  */
 
 import { Bot, Context } from "grammy";
@@ -17,11 +17,8 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { exec } from "child_process";
 import { promisify } from "util";
-import { agentbox, type MessageSource } from "../core/agentbox.js";
-import { type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
-import { type AssistantMessage, type TextContent } from "@mariozechner/pi-ai";
+import { agentbox, type MessageSource, type AgentEvent } from "../core/agentbox.js";
 import { loadAgentConfig, getAgentName } from "../core/config.js";
-import { saveCheckpoint } from "../core/checkpoint.js";
 
 const execAsync = promisify(exec);
 
@@ -58,19 +55,6 @@ async function downloadFile(bot: Bot, fileId: string, filename: string): Promise
   const localPath = join(dir, filename);
   await writeFile(localPath, buf);
   return localPath;
-}
-
-// ── Type helpers ──────────────────────────────────────────────────────────────
-
-function isAssistantMessage(msg: AgentMessage): msg is AssistantMessage {
-  return (msg as AssistantMessage).role === "assistant";
-}
-
-function extractAssistantText(msg: AssistantMessage): string {
-  return msg.content
-    .filter((c): c is TextContent => c.type === "text")
-    .map(c => c.text)
-    .join("");
 }
 
 // ── Rate limiting ─────────────────────────────────────────────────────────────
@@ -122,18 +106,6 @@ export async function startTelegram(): Promise<void> {
   const allowed = new Set(allowedUsers);
   const displayName = config.name ?? agentName;
 
-  // Save checkpoint on SIGTERM so context survives restarts
-  process.once("SIGTERM", async () => {
-    console.log("[Telegram] SIGTERM received — saving checkpoint...");
-    try {
-      await saveCheckpoint(agentbox.messages as any);
-      console.log("[Telegram] Checkpoint saved. Exiting.");
-    } catch (err) {
-      console.error("[Telegram] Failed to save checkpoint:", err);
-    }
-    process.exit(0);
-  });
-
   // Auth middleware
   bot.use(async (ctx, next) => {
     const userId = ctx.from?.id;
@@ -149,9 +121,8 @@ export async function startTelegram(): Promise<void> {
   const HELP_TEXT =
     `*${displayName}* commands:\n\n` +
     `\`/clear\` — clear conversation history (also: \`/reset\`, \`/new\`)\n` +
-    `\`/status\` — show model, message count, current commit\n` +
+    `\`/status\` — show model, session ID, current commit\n` +
     `\`/model <id>\` — switch model (e.g. \`/model claude-opus-4-6\`)\n` +
-    `\`/thinking on|off\` — toggle extended thinking mode\n` +
     `\`/update\` — git pull + build + restart\n` +
     `\`/build\` — build + restart (no git pull)\n` +
     `\`/help\` — show this message\n\n` +
@@ -166,8 +137,8 @@ export async function startTelegram(): Promise<void> {
   });
 
   async function handleReset(ctx: Context) {
-    agentbox.clearMessages();
-    await ctx.reply("✓ History cleared. Fresh session started.");
+    await agentbox.clearSession();
+    await ctx.reply("✓ Session cleared. Fresh conversation started.");
   }
 
   bot.command("clear", handleReset);
@@ -175,18 +146,17 @@ export async function startTelegram(): Promise<void> {
   bot.command("new", handleReset);
 
   bot.command("status", async (ctx) => {
-    const state = agentbox.instance.state;
     let commit = "unknown";
     try {
       const { stdout } = await execAsync("git rev-parse --short HEAD", { cwd: process.cwd() });
       commit = stdout.trim();
     } catch { /* ignore */ }
 
+    const session = agentbox.sessionId ?? "none";
     await ctx.reply(
       `Agent: ${displayName}\n` +
-      `Model: ${state.model.id}\n` +
-      `Messages: ${agentbox.messageCount}\n` +
-      `Thinking: ${state.thinkingLevel ?? "off"}\n` +
+      `Model: ${agentbox.modelId}\n` +
+      `Session: ${session}\n` +
       `Commit: ${commit}`
     );
   });
@@ -196,22 +166,6 @@ export async function startTelegram(): Promise<void> {
     if (!modelId) { await ctx.reply("Usage: /model <model-id>"); return; }
     agentbox.setModel(modelId);
     await ctx.reply(`✓ Switched to ${modelId}`);
-  });
-
-  bot.command("thinking", async (ctx) => {
-    const arg = ctx.match?.trim().toLowerCase();
-    if (arg === "on") {
-      agentbox.setThinkingLevel("medium");
-      await ctx.reply("✓ Thinking: on");
-    } else if (arg === "off") {
-      agentbox.setThinkingLevel("off");
-      await ctx.reply("✓ Thinking: off");
-    } else {
-      const current = agentbox.instance.state.thinkingLevel ?? "off";
-      const next = current === "off" ? "medium" : "off";
-      agentbox.setThinkingLevel(next);
-      await ctx.reply(`✓ Thinking: ${next}`);
-    }
   });
 
   bot.command("update", async (ctx) => {
@@ -273,12 +227,11 @@ export async function startTelegram(): Promise<void> {
       }, 1000);
     };
 
-    const unsubscribe = agentbox.subscribe(`telegram-reply:${sourceId(ctx)}`, async (event: AgentEvent, evtSource: MessageSource) => {
+    const unsubscribe = agentbox.subscribe(`telegram-reply:${sourceId(ctx)}`, (event: AgentEvent, evtSource: MessageSource) => {
       if (evtSource.id !== source.id) return;
 
-      if (event.type === "message_update" && isAssistantMessage(event.message)) {
-        const text = extractAssistantText(event.message);
-        if (text) scheduleEdit(text);
+      if (event.type === "text_delta") {
+        scheduleEdit(event.text);
       }
 
       if (event.type === "agent_end") {
@@ -286,20 +239,13 @@ export async function startTelegram(): Promise<void> {
         processingChats.delete(chatId);
         if (editTimeout) { clearTimeout(editTimeout); editTimeout = null; }
 
-        const lastAssistant = [...event.messages].reverse().find(isAssistantMessage);
-        const finalText = lastAssistant
-          ? extractAssistantText(lastAssistant).trim()
-          : "";
-
-        const displayText = finalText || "_(no response)_";
+        const displayText = event.result.trim() || "_(no response)_";
 
         if (displayText.length <= TELEGRAM_MAX_LENGTH) {
-          try {
-            await ctx.api.editMessageText(ctx.chat!.id, sentMsg.message_id, displayText);
-          } catch { /* unchanged */ }
+          ctx.api.editMessageText(ctx.chat!.id, sentMsg.message_id, displayText).catch(() => {});
         } else {
-          try { await ctx.api.deleteMessage(ctx.chat!.id, sentMsg.message_id); } catch {}
-          for (const chunk of splitMessage(displayText)) await ctx.reply(chunk);
+          ctx.api.deleteMessage(ctx.chat!.id, sentMsg.message_id).catch(() => {});
+          for (const chunk of splitMessage(displayText)) ctx.reply(chunk);
         }
       }
     });

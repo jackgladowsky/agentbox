@@ -1,4 +1,4 @@
-import { readFile, access, readdir } from "fs/promises";
+import { readFile, readdir } from "fs/promises";
 import { join } from "path";
 import { hostname, platform, arch, userInfo } from "os";
 import { loadSoul, notesDir, getAgentName, loadAgentConfig } from "./config.js";
@@ -50,13 +50,6 @@ You are **${agentName}**, an autonomous agent running on real hardware.
 - **User:** ${user}
 - **Working Directory:** ${cwd}
 - **Date/Time:** ${datetime}
-
-## Tools
-
-- **shell** — Execute any command
-- **read_file** — Read any file
-- **write_file** — Create or modify files
-- **list_dir** — Explore the filesystem
 
 ## Identity & Behavior
 
