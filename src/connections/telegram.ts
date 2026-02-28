@@ -154,7 +154,7 @@ export async function startTelegram(): Promise<void> {
 
     await ctx.reply(
       `Agent: ${displayName}\n` +
-      `Backend: claude-code subprocess\n` +
+      `Backend: claude-agent-sdk\n` +
       `Commit: ${commit}`
     );
   });
@@ -166,7 +166,7 @@ export async function startTelegram(): Promise<void> {
     await ctx.reply(`✓ Switched to ${modelId} (takes effect next turn)`);
   });
 
-  // /thinking removed — not supported in subprocess mode
+  // /thinking removed — extended thinking is not supported via the SDK
 
   bot.command("update", async (ctx) => {
     await ctx.reply("⬇️ Pulling latest code...");
@@ -213,13 +213,13 @@ export async function startTelegram(): Promise<void> {
     let editTimeout: NodeJS.Timeout | null = null;
 
     // Debounced edit — sends Telegram edit at most once per second
-    const scheduleEdit = (text: string) => {
+    const scheduleEdit = () => {
       if (editTimeout) return; // already pending
       editTimeout = setTimeout(async () => {
         editTimeout = null;
-        const truncated = text.length > TELEGRAM_MAX_LENGTH
-          ? text.slice(0, TELEGRAM_MAX_LENGTH - 3) + "…"
-          : text;
+        const truncated = accumulatedText.length > TELEGRAM_MAX_LENGTH
+          ? accumulatedText.slice(0, TELEGRAM_MAX_LENGTH - 3) + "…"
+          : accumulatedText;
         if (truncated !== lastEditedText && truncated.trim()) {
           try {
             await ctx.api.editMessageText(chatId, sentMsg.message_id, truncated);
@@ -234,7 +234,7 @@ export async function startTelegram(): Promise<void> {
 
       if (event.type === "text_delta") {
         accumulatedText += event.text;
-        scheduleEdit(accumulatedText);
+        scheduleEdit();
       }
 
       if (event.type === "done") {
