@@ -1,7 +1,7 @@
 /**
  * AgentBox — the singleton agent instance.
  *
- * All connections (Telegram, TUI, etc.) talk to this one agent.
+ * All connections (Telegram, etc.) talk to this one agent.
  * Session history lives in Claude Code's storage — we track a session ID.
  */
 
