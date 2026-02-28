@@ -7,8 +7,7 @@
  * Features:
  * - Streaming responses with live message edits (feels like typing)
  * - File/image/voice downloads from Telegram → agent (saves to /tmp)
- * - /clear, /reset, /new, /model, /thinking, /status, /update, /build, /help commands
- * - Context checkpoint: saves messages on SIGTERM, restores on startup
+ * - /clear, /reset, /new, /model, /status, /update, /build, /help commands
  */
 
 import { Bot, Context } from "grammy";
@@ -18,10 +17,8 @@ import { tmpdir } from "os";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { agentbox, type MessageSource } from "../core/agentbox.js";
-import { type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
-import { type AssistantMessage, type TextContent } from "@mariozechner/pi-ai";
+import { type AgentEvent } from "../core/agent.js";
 import { loadAgentConfig, getAgentName } from "../core/config.js";
-import { saveCheckpoint } from "../core/checkpoint.js";
 
 const execAsync = promisify(exec);
 
@@ -60,22 +57,9 @@ async function downloadFile(bot: Bot, fileId: string, filename: string): Promise
   return localPath;
 }
 
-// ── Type helpers ──────────────────────────────────────────────────────────────
-
-function isAssistantMessage(msg: AgentMessage): msg is AssistantMessage {
-  return (msg as AssistantMessage).role === "assistant";
-}
-
-function extractAssistantText(msg: AssistantMessage): string {
-  return msg.content
-    .filter((c): c is TextContent => c.type === "text")
-    .map(c => c.text)
-    .join("");
-}
-
 // ── Rate limiting ─────────────────────────────────────────────────────────────
 
-/** chatIds currently being processed — used to drop duplicate rapid messages. */
+/** chatIds currently being processed — drop duplicate rapid messages. */
 const processingChats = new Set<number>();
 
 // ── Shared build+restart helper ───────────────────────────────────────────────
@@ -122,18 +106,6 @@ export async function startTelegram(): Promise<void> {
   const allowed = new Set(allowedUsers);
   const displayName = config.name ?? agentName;
 
-  // Save checkpoint on SIGTERM so context survives restarts
-  process.once("SIGTERM", async () => {
-    console.log("[Telegram] SIGTERM received — saving checkpoint...");
-    try {
-      await saveCheckpoint(agentbox.messages as any);
-      console.log("[Telegram] Checkpoint saved. Exiting.");
-    } catch (err) {
-      console.error("[Telegram] Failed to save checkpoint:", err);
-    }
-    process.exit(0);
-  });
-
   // Auth middleware
   bot.use(async (ctx, next) => {
     const userId = ctx.from?.id;
@@ -149,9 +121,8 @@ export async function startTelegram(): Promise<void> {
   const HELP_TEXT =
     `*${displayName}* commands:\n\n` +
     `\`/clear\` — clear conversation history (also: \`/reset\`, \`/new\`)\n` +
-    `\`/status\` — show model, message count, current commit\n` +
+    `\`/status\` — show agent info and current commit\n` +
     `\`/model <id>\` — switch model (e.g. \`/model claude-opus-4-6\`)\n` +
-    `\`/thinking on|off\` — toggle extended thinking mode\n` +
     `\`/update\` — git pull + build + restart\n` +
     `\`/build\` — build + restart (no git pull)\n` +
     `\`/help\` — show this message\n\n` +
@@ -175,7 +146,6 @@ export async function startTelegram(): Promise<void> {
   bot.command("new", handleReset);
 
   bot.command("status", async (ctx) => {
-    const state = agentbox.instance.state;
     let commit = "unknown";
     try {
       const { stdout } = await execAsync("git rev-parse --short HEAD", { cwd: process.cwd() });
@@ -184,9 +154,7 @@ export async function startTelegram(): Promise<void> {
 
     await ctx.reply(
       `Agent: ${displayName}\n` +
-      `Model: ${state.model.id}\n` +
-      `Messages: ${agentbox.messageCount}\n` +
-      `Thinking: ${state.thinkingLevel ?? "off"}\n` +
+      `Backend: claude-code subprocess\n` +
       `Commit: ${commit}`
     );
   });
@@ -195,24 +163,10 @@ export async function startTelegram(): Promise<void> {
     const modelId = ctx.match?.trim();
     if (!modelId) { await ctx.reply("Usage: /model <model-id>"); return; }
     agentbox.setModel(modelId);
-    await ctx.reply(`✓ Switched to ${modelId}`);
+    await ctx.reply(`✓ Switched to ${modelId} (takes effect next turn)`);
   });
 
-  bot.command("thinking", async (ctx) => {
-    const arg = ctx.match?.trim().toLowerCase();
-    if (arg === "on") {
-      agentbox.setThinkingLevel("medium");
-      await ctx.reply("✓ Thinking: on");
-    } else if (arg === "off") {
-      agentbox.setThinkingLevel("off");
-      await ctx.reply("✓ Thinking: off");
-    } else {
-      const current = agentbox.instance.state.thinkingLevel ?? "off";
-      const next = current === "off" ? "medium" : "off";
-      agentbox.setThinkingLevel(next);
-      await ctx.reply(`✓ Thinking: ${next}`);
-    }
-  });
+  // /thinking removed — not supported in subprocess mode
 
   bot.command("update", async (ctx) => {
     await ctx.reply("⬇️ Pulling latest code...");
@@ -254,20 +208,22 @@ export async function startTelegram(): Promise<void> {
     console.log(`[Telegram] ${ctx.from?.username}: ${content.slice(0, 80)}`);
 
     const sentMsg = await ctx.reply("…");
+    let accumulatedText = "";
     let lastEditedText = "";
     let editTimeout: NodeJS.Timeout | null = null;
 
+    // Debounced edit — sends Telegram edit at most once per second
     const scheduleEdit = (text: string) => {
-      if (editTimeout) return;
+      if (editTimeout) return; // already pending
       editTimeout = setTimeout(async () => {
         editTimeout = null;
-        if (text !== lastEditedText && text.trim()) {
+        const truncated = text.length > TELEGRAM_MAX_LENGTH
+          ? text.slice(0, TELEGRAM_MAX_LENGTH - 3) + "…"
+          : text;
+        if (truncated !== lastEditedText && truncated.trim()) {
           try {
-            const truncated = text.length > TELEGRAM_MAX_LENGTH
-              ? text.slice(0, TELEGRAM_MAX_LENGTH - 3) + "…"
-              : text;
-            await ctx.api.editMessageText(ctx.chat!.id, sentMsg.message_id, truncated);
-            lastEditedText = text;
+            await ctx.api.editMessageText(chatId, sentMsg.message_id, truncated);
+            lastEditedText = truncated;
           } catch { /* message unchanged or deleted */ }
         }
       }, 1000);
@@ -276,31 +232,38 @@ export async function startTelegram(): Promise<void> {
     const unsubscribe = agentbox.subscribe(`telegram-reply:${sourceId(ctx)}`, async (event: AgentEvent, evtSource: MessageSource) => {
       if (evtSource.id !== source.id) return;
 
-      if (event.type === "message_update" && isAssistantMessage(event.message)) {
-        const text = extractAssistantText(event.message);
-        if (text) scheduleEdit(text);
+      if (event.type === "text_delta") {
+        accumulatedText += event.text;
+        scheduleEdit(accumulatedText);
       }
 
-      if (event.type === "agent_end") {
+      if (event.type === "done") {
         unsubscribe();
         processingChats.delete(chatId);
         if (editTimeout) { clearTimeout(editTimeout); editTimeout = null; }
 
-        const lastAssistant = [...event.messages].reverse().find(isAssistantMessage);
-        const finalText = lastAssistant
-          ? extractAssistantText(lastAssistant).trim()
-          : "";
+        const finalText = accumulatedText.trim() || "_(no response)_";
 
-        const displayText = finalText || "_(no response)_";
-
-        if (displayText.length <= TELEGRAM_MAX_LENGTH) {
+        if (finalText.length <= TELEGRAM_MAX_LENGTH) {
           try {
-            await ctx.api.editMessageText(ctx.chat!.id, sentMsg.message_id, displayText);
+            await ctx.api.editMessageText(chatId, sentMsg.message_id, finalText);
           } catch { /* unchanged */ }
         } else {
-          try { await ctx.api.deleteMessage(ctx.chat!.id, sentMsg.message_id); } catch {}
-          for (const chunk of splitMessage(displayText)) await ctx.reply(chunk);
+          try { await ctx.api.deleteMessage(chatId, sentMsg.message_id); } catch {}
+          for (const chunk of splitMessage(finalText)) await ctx.reply(chunk);
         }
+      }
+
+      if (event.type === "error") {
+        unsubscribe();
+        processingChats.delete(chatId);
+        if (editTimeout) { clearTimeout(editTimeout); editTimeout = null; }
+        try {
+          await ctx.api.editMessageText(
+            chatId, sentMsg.message_id,
+            `⚠️ Error: ${event.message.slice(0, 500)}`
+          );
+        } catch {}
       }
     });
 
@@ -309,10 +272,12 @@ export async function startTelegram(): Promise<void> {
       processingChats.delete(chatId);
       if (editTimeout) { clearTimeout(editTimeout); editTimeout = null; }
       console.error("[Telegram] Agent error:", err);
-      await ctx.api.editMessageText(
-        ctx.chat!.id, sentMsg.message_id,
-        `⚠️ Error: ${String(err).slice(0, 500)}`
-      );
+      try {
+        await ctx.api.editMessageText(
+          chatId, sentMsg.message_id,
+          `⚠️ Error: ${String(err).slice(0, 500)}`
+        );
+      } catch {}
     });
   }
 
@@ -346,7 +311,7 @@ export async function startTelegram(): Promise<void> {
   bot.on("message:voice", async (ctx) => {
     try {
       const localPath = await downloadFile(bot, ctx.message.voice.file_id, `voice_${Date.now()}.ogg`);
-      await handleMessage(ctx, `[Voice message saved to ${localPath}. Note: No automatic transcription — use the shell tool to transcribe if needed, e.g. with whisper.]`);
+      await handleMessage(ctx, `[Voice message saved to ${localPath}. Transcribe with whisper or another tool if needed.]`);
     } catch (err) {
       await ctx.reply(`⚠️ Failed to download voice: ${err}`);
     }

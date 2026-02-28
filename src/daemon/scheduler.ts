@@ -2,8 +2,8 @@
  * Rex Scheduler Daemon
  *
  * Standalone process (separate from the Telegram bot) that runs scheduled
- * tasks on cron intervals. Each task gets its own isolated agent instance
- * so there's no shared state with the Telegram conversation.
+ * tasks on cron intervals. Each task gets its own isolated session so there's
+ * no shared state with the Telegram conversation.
  *
  * Config: ~/.agentbox/rex/schedule.json
  * Log:    ~/.agentbox/rex/scheduler.log
@@ -13,12 +13,10 @@ import { schedule, validate } from "node-cron";
 import { readFile, appendFile, mkdir } from "fs/promises";
 import { join } from "path";
 import { homedir } from "os";
-import { createAgent } from "../core/agent.js";
+import { runTurn } from "../core/agent.js";
 import { loadWorkspaceContext } from "../core/workspace.js";
 import { loadAgentConfig, agentDir } from "../core/config.js";
 import { sendTelegramMessage } from "../core/telegram-utils.js";
-import { type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
-import { type AssistantMessage, type TextContent } from "@mariozechner/pi-ai";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -65,46 +63,31 @@ async function log(message: string): Promise<void> {
     // If we can't write the log, at least stdout got it
   }
 }
+
 // ── Agent execution ───────────────────────────────────────────────────────────
 
 /**
- * Run a prompt against a fresh, isolated agent instance.
- * Returns the final assistant text output.
+ * Run a prompt against a fresh, isolated Claude Code session.
+ * Returns the full text response.
+ * Each scheduler task gets a fresh session (no persistence).
  */
 async function runAgentPrompt(
   systemPrompt: string,
   prompt: string,
-  taskId: string,
-  openrouterKey?: string
 ): Promise<string> {
-  const agent = createAgent(systemPrompt, undefined, openrouterKey);
+  let output = "";
 
-  return new Promise<string>((resolve, reject) => {
-    let finalText = "";
+  for await (const event of runTurn(prompt, { systemPrompt })) {
+    if (event.type === "text_delta") {
+      output += event.text;
+    }
+    if (event.type === "error") {
+      throw new Error(event.message);
+    }
+    // "done" — we just let the loop end
+  }
 
-    const isAssistant = (m: AgentMessage): m is AssistantMessage =>
-      (m as AssistantMessage).role === "assistant";
-
-    const unsubscribe = agent.subscribe((event: AgentEvent) => {
-      if (event.type === "agent_end") {
-        unsubscribe();
-        const lastMsg = [...event.messages].reverse().find(isAssistant);
-        if (lastMsg) {
-          finalText = lastMsg.content
-            .filter((c): c is TextContent => c.type === "text")
-            .map(c => c.text)
-            .join("")
-            .trim();
-        }
-        resolve(finalText || "(no output)");
-      }
-    });
-
-    agent.prompt(prompt).catch((err: Error) => {
-      unsubscribe();
-      reject(err);
-    });
-  });
+  return output.trim() || "(no output)";
 }
 
 // ── Task runner ───────────────────────────────────────────────────────────────
@@ -114,7 +97,6 @@ async function runTask(
   systemPrompt: string,
   telegramToken: string | undefined,
   telegramChatId: number | undefined,
-  openrouterKey?: string
 ): Promise<TaskResult> {
   const startedAt = new Date();
   await log(`[${task.id}] Starting: ${task.name}`);
@@ -123,7 +105,7 @@ async function runTask(
   let success = true;
 
   try {
-    output = await runAgentPrompt(systemPrompt, task.prompt, task.id, openrouterKey);
+    output = await runAgentPrompt(systemPrompt, task.prompt);
     await log(`[${task.id}] Completed. Output length: ${output.length} chars`);
   } catch (err: any) {
     success = false;
@@ -156,13 +138,12 @@ async function runTask(
 }
 
 /**
- * Resolve whether to send a Telegram notification based on the task's notify setting.
+ * Resolve whether to send a Telegram notification.
  */
 function resolveNotify(notify: NotifyMode, success: boolean, output: string): boolean {
   if (notify === false) return false;
   if (notify === true) return true;
   if (notify === "on_issue") {
-    // Notify if the task failed or if the output signals a problem
     if (!success) return true;
     const lower = output.toLowerCase();
     return (
@@ -191,18 +172,13 @@ async function loadSchedule(): Promise<ScheduledTask[]> {
 
 // ── Task registration ─────────────────────────────────────────────────────────
 
-/** Map from task id → active node-cron ScheduledTask handle */
 const activeCronJobs = new Map<string, ReturnType<typeof schedule>>();
 
-/**
- * Stop all currently running cron jobs, then register a new set of tasks.
- * Returns the number of successfully registered tasks.
- */
 async function registerTasks(
   tasks: ScheduledTask[],
   systemPrompt: string,
   telegramToken: string | undefined,
-  telegramChatId: number | undefined
+  telegramChatId: number | undefined,
 ): Promise<number> {
   // Stop and clear existing cron jobs
   for (const [id, job] of activeCronJobs) {
@@ -221,11 +197,9 @@ async function registerTasks(
     await log(`[${task.id}] Registered: "${task.name}" @ ${task.schedule}`);
 
     const job = schedule(task.schedule, async () => {
-      // Each invocation runs independently; errors don't affect other tasks
       try {
         await runTask(task, systemPrompt, telegramToken, telegramChatId);
       } catch (err: any) {
-        // Catch any unexpected errors at the top level so the scheduler stays alive
         await log(`[${task.id}] Unexpected top-level error: ${err?.message ?? String(err)}`);
       }
     });
@@ -240,16 +214,13 @@ async function registerTasks(
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main(): Promise<void> {
-  // Ensure log directory exists
   await mkdir(AGENT_DIR, { recursive: true });
 
   await log(`Scheduler starting for agent: ${AGENT_NAME}`);
 
-  // Load agent config (for Telegram token + allowed users)
   const config = await loadAgentConfig(AGENT_NAME);
   const telegramToken = config.telegram?.token;
-  const telegramChatId = config.telegram?.allowedUsers?.[0]; // notify the first allowed user
-  const openrouterKey = config.openrouterKey;
+  const telegramChatId = config.telegram?.allowedUsers?.[0];
 
   if (!telegramToken || !telegramChatId) {
     await log(
@@ -258,10 +229,8 @@ async function main(): Promise<void> {
     );
   }
 
-  // Build system prompt once and reuse across all tasks
   const { systemPrompt } = await loadWorkspaceContext();
 
-  // Load task schedule and register tasks
   const tasks = await loadSchedule();
   await log(`Loaded ${tasks.length} task(s) from ${SCHEDULE_PATH}`);
 
@@ -274,22 +243,13 @@ async function main(): Promise<void> {
 
   await log(`Scheduler running with ${registered} task(s). PID: ${process.pid}`);
 
-  // Keep process alive
-  process.on("SIGINT", async () => {
-    await log("Scheduler stopping (SIGINT)");
-    process.exit(0);
-  });
-
-  process.on("SIGTERM", async () => {
-    await log("Scheduler stopping (SIGTERM)");
-    process.exit(0);
-  });
+  process.on("SIGINT", async () => { await log("Scheduler stopping (SIGINT)"); process.exit(0); });
+  process.on("SIGTERM", async () => { await log("Scheduler stopping (SIGTERM)"); process.exit(0); });
 
   process.on("SIGHUP", async () => {
     await log("[Scheduler] SIGHUP received — reloading schedule...");
     try {
       const newTasks = await loadSchedule();
-      await log(`[Scheduler] Loaded ${newTasks.length} task(s) from ${SCHEDULE_PATH}`);
       const newCount = await registerTasks(newTasks, systemPrompt, telegramToken, telegramChatId);
       await log(`[Scheduler] Reload complete — ${newCount} task(s) active`);
     } catch (err: any) {
@@ -299,7 +259,6 @@ async function main(): Promise<void> {
 
   process.on("uncaughtException", async (err) => {
     await log(`Uncaught exception: ${err.message}\n${err.stack}`);
-    // Don't exit — keep the scheduler alive
   });
 
   process.on("unhandledRejection", async (reason) => {
@@ -309,8 +268,6 @@ async function main(): Promise<void> {
 
 main().catch(async (err) => {
   console.error("[Scheduler] Fatal startup error:", err);
-  try {
-    await appendFile(LOG_PATH, `[${new Date().toISOString()}] FATAL: ${err}\n`);
-  } catch {}
+  try { await appendFile(LOG_PATH, `[${new Date().toISOString()}] FATAL: ${err}\n`); } catch {}
   process.exit(1);
 });

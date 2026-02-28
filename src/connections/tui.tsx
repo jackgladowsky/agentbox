@@ -3,14 +3,13 @@
  * Uses Ink for a clean interactive terminal experience.
  */
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState } from "react";
 import { render, Box, Text, useInput, useApp } from "ink";
 import TextInput from "ink-text-input";
 import { exec } from "child_process";
 import { promisify } from "util";
 import { agentbox, type MessageSource } from "../core/agentbox.js";
-import { type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
-import { type AssistantMessage, type TextContent } from "@mariozechner/pi-ai";
+import { type AgentEvent } from "../core/agent.js";
 
 const execAsync = promisify(exec);
 
@@ -22,21 +21,6 @@ interface Message {
 }
 
 const TUI_SOURCE: MessageSource = { id: "tui:local", label: "TUI" };
-
-// ── Type helpers ──────────────────────────────────────────────────────────────
-
-/** Type guard: narrow AgentMessage to AssistantMessage. */
-function isAssistantMessage(msg: AgentMessage): msg is AssistantMessage {
-  return (msg as AssistantMessage).role === "assistant";
-}
-
-/** Extract plain text from an AssistantMessage's content array. */
-function extractAssistantText(msg: AssistantMessage): string {
-  return msg.content
-    .filter((c): c is TextContent => c.type === "text")
-    .map(c => c.text)
-    .join("");
-}
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -71,21 +55,13 @@ function AgentBoxTUI() {
     if (trimmed.startsWith("/model ")) {
       const modelId = trimmed.slice(7).trim();
       agentbox.setModel(modelId);
-      setMessages(prev => [...prev, { role: "system", content: `✓ Switched to ${modelId}` }]);
-      return;
-    }
-    if (trimmed === "/thinking") {
-      const current = agentbox.instance.state.thinkingLevel ?? "off";
-      const next = current === "off" ? "medium" : "off";
-      agentbox.setThinkingLevel(next);
-      setMessages(prev => [...prev, { role: "system", content: `✓ Thinking: ${next}` }]);
+      setMessages(prev => [...prev, { role: "system", content: `✓ Switched to ${modelId} (takes effect next turn)` }]);
       return;
     }
     if (trimmed === "/status") {
-      const state = agentbox.instance.state;
       setMessages(prev => [...prev, {
         role: "system",
-        content: `Agent: ${agentbox.name}\nModel: ${state.model.id}\nMessages: ${agentbox.messageCount}\nThinking: ${state.thinkingLevel ?? "off"}`
+        content: `Agent: ${agentbox.name}\nBackend: claude-code subprocess`,
       }]);
       return;
     }
@@ -94,7 +70,7 @@ function AgentBoxTUI() {
       execAsync("git pull --ff-only", { cwd: process.cwd() }).then(({ stdout }) => {
         const summary = stdout.trim();
         if (summary.includes("Already up to date")) {
-          setMessages(prev => [...prev, { role: "system", content: "✓ Already up to date. No restart needed." }]);
+          setMessages(prev => [...prev, { role: "system", content: "✓ Already up to date." }]);
         } else {
           setMessages(prev => [...prev, { role: "system", content: `✓ Updated:\n${summary}\n\nRestarting...` }]);
           setTimeout(() => process.kill(process.pid, "SIGTERM"), 1500);
@@ -110,38 +86,44 @@ function AgentBoxTUI() {
     setStreamBuffer("");
 
     const unsubscribe = agentbox.subscribe("tui", (event: AgentEvent) => {
-      if (event.type === "message_update" && isAssistantMessage(event.message)) {
-        const text = extractAssistantText(event.message);
-        setStreamBuffer(text);
+      if (event.type === "text_delta") {
+        setStreamBuffer(prev => prev + event.text);
       }
 
-      if (event.type === "agent_end") {
+      if (event.type === "done") {
         unsubscribe();
-        const lastAssistant = [...event.messages].reverse().find(isAssistantMessage);
-        const finalText = lastAssistant
-          ? extractAssistantText(lastAssistant).trim()
-          : "";
+        setMessages(prev => {
+          const text = prev[prev.length] as any; // captured via closure below
+          return prev;
+        });
+        // Capture current stream buffer via a ref-like pattern
+        setStreamBuffer(current => {
+          const finalText = current.trim() || "(no response)";
+          setMessages(prev => [...prev, { role: "assistant", content: finalText }]);
+          setAppState("idle");
+          return "";
+        });
+      }
+
+      if (event.type === "error") {
+        unsubscribe();
         setStreamBuffer("");
-        setMessages(prev => [...prev, { role: "assistant", content: finalText || "(no response)" }]);
+        setMessages(prev => [...prev, { role: "system", content: `⚠️ Error: ${event.message}` }]);
         setAppState("idle");
       }
     });
 
-
     agentbox.prompt(trimmed, TUI_SOURCE).catch(err => {
       unsubscribe();
+      setStreamBuffer("");
       setMessages(prev => [...prev, { role: "system", content: `Error: ${err.message}` }]);
       setAppState("idle");
     });
   };
 
-  const modelId = agentbox.instance.state.model.id;
-  const countStr = agentbox.messageCount > 0 ? ` • ${agentbox.messageCount} msgs` : "";
-  const title = `${agentbox.name} @ agentbox • ${modelId}${countStr}`;
-
   return (
     <Box flexDirection="column" padding={1}>
-      <Text color="cyan" bold>{title}</Text>
+      <Text color="cyan" bold>{agentbox.name} @ agentbox • claude-code</Text>
       <Text color="gray">─────────────────────────────────────────</Text>
 
       <Box flexDirection="column" marginTop={1}>
