@@ -36,6 +36,7 @@
   "homepage": "https://github.com/jackgladowsky/agentbox#readme",
   "type": "module",
   "dependencies": {
+    "@anthropic-ai/claude-code": "^2.1.62",
     "@anthropic-ai/sdk": "^0.75.0",
     "@mariozechner/pi-agent-core": "^0.53.0",
     "@mariozechner/pi-ai": "^0.53.0",
