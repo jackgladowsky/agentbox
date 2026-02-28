@@ -3,6 +3,9 @@ import { join } from "path";
 import { hostname, platform, arch, userInfo } from "os";
 import { loadSoul, notesDir, getAgentName, loadAgentConfig } from "./config.js";
 
+/** Maximum characters allowed for the notes section of the system prompt */
+const NOTES_BUDGET = 6000;
+
 export interface WorkspaceContext {
   systemPrompt: string;
   agentName: string;
@@ -86,6 +89,40 @@ async function loadNotes(name: string): Promise<{ filename: string; content: str
 }
 
 /**
+ * Condense the loaded notes to fit within the character budget.
+ * If the raw notes fit, they are returned verbatim; otherwise each note
+ * is proportionally truncated so the total stays under NOTES_BUDGET.
+ */
+function summarizeNotes(notes: { filename: string; content: string }[]): string {
+  if (notes.length === 0) return "";
+
+  // Calculate total raw size
+  const rawParts = notes.map(({ filename, content }) => `## ${filename}\n${content}`);
+  const rawTotal = rawParts.join("\n\n").length;
+
+  // If everything fits, return as-is
+  if (rawTotal <= NOTES_BUDGET) {
+    return `# Agent Notes\n\n${rawParts.join("\n\n")}\n\n`;
+  }
+
+  // Over budget — truncate each note proportionally
+  let result = "# Agent Notes (condensed)\n\n";
+  const perNoteBudget = Math.floor(NOTES_BUDGET / notes.length);
+
+  for (const { filename, content } of notes) {
+    const header = `## ${filename}\n`;
+    const maxContent = perNoteBudget - header.length - 20; // leave room for truncation marker
+    if (content.length <= maxContent) {
+      result += `${header}${content}\n\n`;
+    } else {
+      result += `${header}${content.slice(0, maxContent)}\u2026\n_(truncated \u2014 ${content.length} chars total)_\n\n`;
+    }
+  }
+
+  return result;
+}
+
+/**
  * Build the full system prompt for the agent.
  */
 export async function loadWorkspaceContext(): Promise<WorkspaceContext> {
@@ -100,14 +137,9 @@ export async function loadWorkspaceContext(): Promise<WorkspaceContext> {
     systemPrompt += `# Identity & Configuration\n\n## SOUL.md\n${soul.trim()}\n\n`;
   }
 
-  // Load notes
+  // Load notes (budget-aware)
   const notes = await loadNotes(agentName);
-  if (notes.length > 0) {
-    systemPrompt += `# Agent Notes\n\n`;
-    for (const { filename, content } of notes) {
-      systemPrompt += `## ${filename}\n${content}\n\n`;
-    }
-  }
+  systemPrompt += summarizeNotes(notes);
 
   return { systemPrompt, agentName };
 }
