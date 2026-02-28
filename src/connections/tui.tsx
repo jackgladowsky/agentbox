@@ -3,14 +3,12 @@
  * Uses Ink for a clean interactive terminal experience.
  */
 
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState } from "react";
 import { render, Box, Text, useInput, useApp } from "ink";
 import TextInput from "ink-text-input";
 import { exec } from "child_process";
 import { promisify } from "util";
-import { agentbox, type MessageSource } from "../core/agentbox.js";
-import { type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
-import { type AssistantMessage, type TextContent } from "@mariozechner/pi-ai";
+import { agentbox, type MessageSource, type AgentEvent } from "../core/agentbox.js";
 
 const execAsync = promisify(exec);
 
@@ -22,21 +20,6 @@ interface Message {
 }
 
 const TUI_SOURCE: MessageSource = { id: "tui:local", label: "TUI" };
-
-// ── Type helpers ──────────────────────────────────────────────────────────────
-
-/** Type guard: narrow AgentMessage to AssistantMessage. */
-function isAssistantMessage(msg: AgentMessage): msg is AssistantMessage {
-  return (msg as AssistantMessage).role === "assistant";
-}
-
-/** Extract plain text from an AssistantMessage's content array. */
-function extractAssistantText(msg: AssistantMessage): string {
-  return msg.content
-    .filter((c): c is TextContent => c.type === "text")
-    .map(c => c.text)
-    .join("");
-}
 
 // ── Component ─────────────────────────────────────────────────────────────────
 
@@ -64,7 +47,7 @@ function AgentBoxTUI() {
 
     // Commands
     if (trimmed === "/clear" || trimmed === "/reset" || trimmed === "/new") {
-      agentbox.clearMessages();
+      await agentbox.clearSession();
       setMessages([]);
       return;
     }
@@ -74,18 +57,11 @@ function AgentBoxTUI() {
       setMessages(prev => [...prev, { role: "system", content: `✓ Switched to ${modelId}` }]);
       return;
     }
-    if (trimmed === "/thinking") {
-      const current = agentbox.instance.state.thinkingLevel ?? "off";
-      const next = current === "off" ? "medium" : "off";
-      agentbox.setThinkingLevel(next);
-      setMessages(prev => [...prev, { role: "system", content: `✓ Thinking: ${next}` }]);
-      return;
-    }
     if (trimmed === "/status") {
-      const state = agentbox.instance.state;
+      const session = agentbox.sessionId ?? "none";
       setMessages(prev => [...prev, {
         role: "system",
-        content: `Agent: ${agentbox.name}\nModel: ${state.model.id}\nMessages: ${agentbox.messageCount}\nThinking: ${state.thinkingLevel ?? "off"}`
+        content: `Agent: ${agentbox.name}\nModel: ${agentbox.modelId}\nSession: ${session}`
       }]);
       return;
     }
@@ -110,19 +86,14 @@ function AgentBoxTUI() {
     setStreamBuffer("");
 
     const unsubscribe = agentbox.subscribe("tui", (event: AgentEvent) => {
-      if (event.type === "message_update" && isAssistantMessage(event.message)) {
-        const text = extractAssistantText(event.message);
-        setStreamBuffer(text);
+      if (event.type === "text_delta") {
+        setStreamBuffer(event.text);
       }
 
       if (event.type === "agent_end") {
         unsubscribe();
-        const lastAssistant = [...event.messages].reverse().find(isAssistantMessage);
-        const finalText = lastAssistant
-          ? extractAssistantText(lastAssistant).trim()
-          : "";
         setStreamBuffer("");
-        setMessages(prev => [...prev, { role: "assistant", content: finalText || "(no response)" }]);
+        setMessages(prev => [...prev, { role: "assistant", content: event.result.trim() || "(no response)" }]);
         setAppState("idle");
       }
     });
@@ -135,9 +106,7 @@ function AgentBoxTUI() {
     });
   };
 
-  const modelId = agentbox.instance.state.model.id;
-  const countStr = agentbox.messageCount > 0 ? ` • ${agentbox.messageCount} msgs` : "";
-  const title = `${agentbox.name} @ agentbox • ${modelId}${countStr}`;
+  const title = `${agentbox.name} @ agentbox • ${agentbox.modelId}`;
 
   return (
     <Box flexDirection="column" padding={1}>

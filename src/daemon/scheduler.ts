@@ -2,7 +2,7 @@
  * Rex Scheduler Daemon
  *
  * Standalone process (separate from the Telegram bot) that runs scheduled
- * tasks on cron intervals. Each task gets its own isolated agent instance
+ * tasks on cron intervals. Each task gets its own isolated agent query
  * so there's no shared state with the Telegram conversation.
  *
  * Config: ~/.agentbox/rex/schedule.json
@@ -12,13 +12,10 @@
 import { schedule, validate } from "node-cron";
 import { readFile, appendFile, mkdir } from "fs/promises";
 import { join } from "path";
-import { homedir } from "os";
-import { createAgent } from "../core/agent.js";
+import { runAgent } from "../core/agent.js";
 import { loadWorkspaceContext } from "../core/workspace.js";
 import { loadAgentConfig, agentDir } from "../core/config.js";
 import { sendTelegramMessage } from "../core/telegram-utils.js";
-import { type AgentEvent, type AgentMessage } from "@mariozechner/pi-agent-core";
-import { type AssistantMessage, type TextContent } from "@mariozechner/pi-ai";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -74,37 +71,12 @@ async function log(message: string): Promise<void> {
 async function runAgentPrompt(
   systemPrompt: string,
   prompt: string,
-  taskId: string,
-  openrouterKey?: string
 ): Promise<string> {
-  const agent = createAgent(systemPrompt, undefined, openrouterKey);
-
-  return new Promise<string>((resolve, reject) => {
-    let finalText = "";
-
-    const isAssistant = (m: AgentMessage): m is AssistantMessage =>
-      (m as AssistantMessage).role === "assistant";
-
-    const unsubscribe = agent.subscribe((event: AgentEvent) => {
-      if (event.type === "agent_end") {
-        unsubscribe();
-        const lastMsg = [...event.messages].reverse().find(isAssistant);
-        if (lastMsg) {
-          finalText = lastMsg.content
-            .filter((c): c is TextContent => c.type === "text")
-            .map(c => c.text)
-            .join("")
-            .trim();
-        }
-        resolve(finalText || "(no output)");
-      }
-    });
-
-    agent.prompt(prompt).catch((err: Error) => {
-      unsubscribe();
-      reject(err);
-    });
+  const { result } = await runAgent({
+    prompt,
+    systemPrompt,
   });
+  return result || "(no output)";
 }
 
 // ── Task runner ───────────────────────────────────────────────────────────────
@@ -114,7 +86,6 @@ async function runTask(
   systemPrompt: string,
   telegramToken: string | undefined,
   telegramChatId: number | undefined,
-  openrouterKey?: string
 ): Promise<TaskResult> {
   const startedAt = new Date();
   await log(`[${task.id}] Starting: ${task.name}`);
@@ -123,7 +94,7 @@ async function runTask(
   let success = true;
 
   try {
-    output = await runAgentPrompt(systemPrompt, task.prompt, task.id, openrouterKey);
+    output = await runAgentPrompt(systemPrompt, task.prompt);
     await log(`[${task.id}] Completed. Output length: ${output.length} chars`);
   } catch (err: any) {
     success = false;
@@ -249,7 +220,6 @@ async function main(): Promise<void> {
   const config = await loadAgentConfig(AGENT_NAME);
   const telegramToken = config.telegram?.token;
   const telegramChatId = config.telegram?.allowedUsers?.[0]; // notify the first allowed user
-  const openrouterKey = config.openrouterKey;
 
   if (!telegramToken || !telegramChatId) {
     await log(
