@@ -1,6 +1,7 @@
 import { readFile, access, readdir } from "fs/promises";
 import { join } from "path";
 import { hostname, platform, arch, userInfo } from "os";
+import { query } from "@anthropic-ai/claude-agent-sdk";
 import { loadSoul, notesDir, getAgentName, loadAgentConfig } from "./config.js";
 
 /** Maximum characters allowed for the notes section of the system prompt */
@@ -90,28 +91,56 @@ async function loadNotes(name: string): Promise<{ filename: string; content: str
 
 /**
  * Condense the loaded notes to fit within the character budget.
- * If the raw notes fit, they are returned verbatim; otherwise each note
- * is proportionally truncated so the total stays under NOTES_BUDGET.
+ * If the raw notes fit, they are returned verbatim; otherwise we ask
+ * Haiku to produce a short paragraph summary referencing file paths.
+ * Falls back to naive truncation if the API call fails.
  */
-function summarizeNotes(notes: { filename: string; content: string }[]): string {
+async function summarizeNotes(notes: { filename: string; content: string }[]): Promise<string> {
   if (notes.length === 0) return "";
 
-  // Calculate total raw size
   const rawParts = notes.map(({ filename, content }) => `## ${filename}\n${content}`);
-  const rawTotal = rawParts.join("\n\n").length;
+  const rawText = rawParts.join("\n\n");
 
   // If everything fits, return as-is
-  if (rawTotal <= NOTES_BUDGET) {
-    return `# Agent Notes\n\n${rawParts.join("\n\n")}\n\n`;
+  if (rawText.length <= NOTES_BUDGET) {
+    return `# Agent Notes\n\n${rawText}\n\n`;
   }
 
-  // Over budget — truncate each note proportionally
+  // Over budget — ask Claude to summarize via the agent SDK (handles auth natively)
+  try {
+    const prompt =
+      `Summarize the following agent notes into a short paragraph (under ${NOTES_BUDGET} characters). ` +
+      `Reference the source filenames (e.g. "see goals.md") when relevant so the agent knows where to look for details. ` +
+      `Output ONLY the summary, no preamble.\n\n${rawText}`;
+
+    let summary = "";
+    for await (const msg of query({
+      prompt,
+      options: {
+        model: "claude-haiku-4-5",
+        maxTurns: 1,
+        allowedTools: [],
+      },
+    })) {
+      if ("result" in msg) {
+        summary = msg.result;
+      }
+    }
+
+    if (summary.trim()) {
+      return `# Agent Notes (summarized)\n\n${summary.trim()}\n\n`;
+    }
+  } catch (err) {
+    console.warn("[workspace] Notes summarization failed, falling back to truncation:", err);
+  }
+
+  // Fallback — naive proportional truncation
   let result = "# Agent Notes (condensed)\n\n";
   const perNoteBudget = Math.floor(NOTES_BUDGET / notes.length);
 
   for (const { filename, content } of notes) {
     const header = `## ${filename}\n`;
-    const maxContent = perNoteBudget - header.length - 20; // leave room for truncation marker
+    const maxContent = Math.max(perNoteBudget - header.length - 50, 0);
     if (content.length <= maxContent) {
       result += `${header}${content}\n\n`;
     } else {
@@ -137,9 +166,9 @@ export async function loadWorkspaceContext(): Promise<WorkspaceContext> {
     systemPrompt += `# Identity & Configuration\n\n## SOUL.md\n${soul.trim()}\n\n`;
   }
 
-  // Load notes (budget-aware)
+  // Load notes (budget-aware, LLM-summarized if over budget)
   const notes = await loadNotes(agentName);
-  systemPrompt += summarizeNotes(notes);
+  systemPrompt += await summarizeNotes(notes);
 
   return { systemPrompt, agentName };
 }
