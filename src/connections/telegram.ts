@@ -16,8 +16,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { exec } from "child_process";
 import { promisify } from "util";
-import { agentbox, type MessageSource } from "../core/agentbox.js";
-import { type AgentEvent } from "../core/agent.js";
+import { agentbox, type MessageSource, type AgentEvent } from "../core/agentbox.js";
 import { loadAgentConfig, getAgentName } from "../core/config.js";
 
 const execAsync = promisify(exec);
@@ -121,7 +120,7 @@ export async function startTelegram(): Promise<void> {
   const HELP_TEXT =
     `*${displayName}* commands:\n\n` +
     `\`/clear\` — clear conversation history (also: \`/reset\`, \`/new\`)\n` +
-    `\`/status\` — show agent info and current commit\n` +
+    `\`/status\` — show model, session ID, current commit\n` +
     `\`/model <id>\` — switch model (e.g. \`/model claude-opus-4-6\`)\n` +
     `\`/update\` — git pull + build + restart\n` +
     `\`/build\` — build + restart (no git pull)\n` +
@@ -152,9 +151,11 @@ export async function startTelegram(): Promise<void> {
       commit = stdout.trim();
     } catch { /* ignore */ }
 
+    const session = agentbox.sessionId?.slice(0, 8) ?? "none";
     await ctx.reply(
       `Agent: ${displayName}\n` +
-      `Backend: claude-agent-sdk\n` +
+      `Model: ${agentbox.modelId ?? "default"}\n` +
+      `Session: ${session}\n` +
       `Commit: ${commit}`
     );
   });
@@ -163,10 +164,8 @@ export async function startTelegram(): Promise<void> {
     const modelId = ctx.match?.trim();
     if (!modelId) { await ctx.reply("Usage: /model <model-id>"); return; }
     agentbox.setModel(modelId);
-    await ctx.reply(`✓ Switched to ${modelId} (takes effect next turn)`);
+    await ctx.reply(`✓ Switched to ${modelId}`);
   });
-
-  // /thinking removed — extended thinking is not supported via the SDK
 
   bot.command("update", async (ctx) => {
     await ctx.reply("⬇️ Pulling latest code...");
