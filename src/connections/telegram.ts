@@ -16,8 +16,7 @@ import { join } from "path";
 import { tmpdir } from "os";
 import { exec } from "child_process";
 import { promisify } from "util";
-import { agentbox, type MessageSource } from "../core/agentbox.js";
-import { type AgentEvent } from "../core/agent.js";
+import { agentbox, type MessageSource, type AgentEvent } from "../core/agentbox.js";
 import { loadAgentConfig, getAgentName } from "../core/config.js";
 
 const execAsync = promisify(exec);
@@ -121,7 +120,7 @@ export async function startTelegram(): Promise<void> {
   const HELP_TEXT =
     `*${displayName}* commands:\n\n` +
     `\`/clear\` — clear conversation history (also: \`/reset\`, \`/new\`)\n` +
-    `\`/status\` — show agent info and current commit\n` +
+    `\`/status\` — show model, session ID, current commit\n` +
     `\`/model <id>\` — switch model (e.g. \`/model claude-opus-4-6\`)\n` +
     `\`/update\` — git pull + build + restart\n` +
     `\`/build\` — build + restart (no git pull)\n` +
@@ -152,9 +151,11 @@ export async function startTelegram(): Promise<void> {
       commit = stdout.trim();
     } catch { /* ignore */ }
 
+    const session = agentbox.sessionId?.slice(0, 8) ?? "none";
     await ctx.reply(
       `Agent: ${displayName}\n` +
-      `Backend: claude-code subprocess\n` +
+      `Model: ${agentbox.modelId ?? "default"}\n` +
+      `Session: ${session}\n` +
       `Commit: ${commit}`
     );
   });
@@ -163,10 +164,8 @@ export async function startTelegram(): Promise<void> {
     const modelId = ctx.match?.trim();
     if (!modelId) { await ctx.reply("Usage: /model <model-id>"); return; }
     agentbox.setModel(modelId);
-    await ctx.reply(`✓ Switched to ${modelId} (takes effect next turn)`);
+    await ctx.reply(`✓ Switched to ${modelId}`);
   });
-
-  // /thinking removed — not supported in subprocess mode
 
   bot.command("update", async (ctx) => {
     await ctx.reply("⬇️ Pulling latest code...");
@@ -213,13 +212,13 @@ export async function startTelegram(): Promise<void> {
     let editTimeout: NodeJS.Timeout | null = null;
 
     // Debounced edit — sends Telegram edit at most once per second
-    const scheduleEdit = (text: string) => {
+    const scheduleEdit = () => {
       if (editTimeout) return; // already pending
       editTimeout = setTimeout(async () => {
         editTimeout = null;
-        const truncated = text.length > TELEGRAM_MAX_LENGTH
-          ? text.slice(0, TELEGRAM_MAX_LENGTH - 3) + "…"
-          : text;
+        const truncated = accumulatedText.length > TELEGRAM_MAX_LENGTH
+          ? accumulatedText.slice(0, TELEGRAM_MAX_LENGTH - 3) + "…"
+          : accumulatedText;
         if (truncated !== lastEditedText && truncated.trim()) {
           try {
             await ctx.api.editMessageText(chatId, sentMsg.message_id, truncated);
@@ -234,7 +233,7 @@ export async function startTelegram(): Promise<void> {
 
       if (event.type === "text_delta") {
         accumulatedText += event.text;
-        scheduleEdit(accumulatedText);
+        scheduleEdit();
       }
 
       if (event.type === "done") {

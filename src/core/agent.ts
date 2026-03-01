@@ -1,16 +1,9 @@
 /**
- * AgentBox agent — powered by @anthropic-ai/claude-agent-sdk.
+ * AgentBox agent — SDK-based query interface powered by @anthropic-ai/claude-agent-sdk.
  *
- * query() returns an AsyncGenerator<SDKMessage> — no subprocess, no JSON parsing,
- * no binary path resolution. Just import and call.
- *
- * What this replaces vs the old agent.ts:
- *   - pi-agent-core Agent class → query() from SDK
- *   - All tool implementations → Claude Code's built-in tools
- *   - All compaction logic → Claude Code handles it natively
- *   - resolveModel() / getModels() → Options.model
- *   - getApiKey() / credentials.json → SDK uses Claude Code's existing auth
- *   - checkpoint.ts → session_id file (SDK persists history server-side)
+ * Exposes runTurn() as an AsyncGenerator<AgentEvent>, translating SDK messages
+ * into simple UI events (text_delta, tool_start, tool_end, done, error).
+ * Session persistence is handled via session IDs stored on disk.
  */
 
 import { query } from "@anthropic-ai/claude-agent-sdk";

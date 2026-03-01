@@ -6,6 +6,7 @@
  */
 
 import { runTurn, saveSessionId, loadSessionId, clearSessionId, type AgentEvent } from "./agent.js";
+export type { AgentEvent } from "./agent.js";
 import { loadWorkspaceContext } from "./workspace.js";
 import { loadAgentConfig } from "./config.js";
 
@@ -20,32 +21,38 @@ const INACTIVITY_TIMEOUT_MS = 10 * 60 * 1000;
 
 class AgentBox {
   private systemPrompt = "";
-  private sessionId: string | undefined = undefined;
+  private _sessionId: string | undefined = undefined;
   private agentName = "agent";
-  private model: string | undefined = undefined;
+  private _model: string | undefined = undefined;
   private listeners = new Map<string, AgentResponseCallback>();
   private queue: Array<{ content: string; source: MessageSource }> = [];
   private busy = false;
   private _name = "agent";
   private _abortController: AbortController | null = null;
+  private _initialized = false;
 
   async init(): Promise<void> {
+    if (this._initialized) return;
+
     const { systemPrompt, agentName } = await loadWorkspaceContext();
     const config = await loadAgentConfig(agentName);
 
     this._name = config.name ?? agentName;
     this.agentName = agentName;
     this.systemPrompt = systemPrompt;
-    this.model = config.model;
-    this.sessionId = (await loadSessionId(agentName)) ?? undefined;
+    this._model = config.model;
+    this._sessionId = (await loadSessionId(agentName)) ?? undefined;
+    this._initialized = true;
 
     console.log(
       `[AgentBox] ${this._name} initialized (claude-agent-sdk)` +
-      (this.sessionId ? ` — resuming session ${this.sessionId.slice(0, 8)}...` : " — new session")
+      (this._sessionId ? ` — resuming session ${this._sessionId.slice(0, 8)}...` : " — new session")
     );
   }
 
   get name(): string { return this._name; }
+  get modelId(): string | undefined { return this._model; }
+  get sessionId(): string | undefined { return this._sessionId; }
 
   subscribe(id: string, callback: AgentResponseCallback): () => void {
     this.listeners.set(id, callback);
@@ -88,9 +95,9 @@ class AgentBox {
       resetWatchdog();
 
       const stream = runTurn(content, {
-        sessionId: this.sessionId,
-        systemPrompt: this.sessionId ? undefined : this.systemPrompt,
-        model: this.model,
+        sessionId: this._sessionId,
+        systemPrompt: this._sessionId ? undefined : this.systemPrompt,
+        model: this._model,
         abortController: this._abortController,
       });
 
@@ -98,8 +105,12 @@ class AgentBox {
         resetWatchdog();
 
         if (event.type === "done") {
-          this.sessionId = event.sessionId;
-          if (event.sessionId) await saveSessionId(this.agentName, event.sessionId);
+          this._sessionId = event.sessionId;
+          if (event.sessionId) {
+            saveSessionId(this.agentName, event.sessionId).catch(err =>
+              console.error("[AgentBox] Failed to persist session ID:", err)
+            );
+          }
         }
 
         emit(event);
@@ -119,22 +130,14 @@ class AgentBox {
   }
 
   clearMessages(): void {
-    this.sessionId = undefined;
+    this._sessionId = undefined;
     clearSessionId(this.agentName).catch(() => {});
     console.log(`[AgentBox] Session cleared — next turn starts fresh.`);
   }
 
   setModel(modelId: string): void {
-    this.model = modelId;
-    console.log(`[AgentBox] Model set to ${modelId} (takes effect next turn).`);
-  }
-
-  setThinkingLevel(_level: string): void {
-    console.log(`[AgentBox] setThinkingLevel: not supported with claude-agent-sdk.`);
-  }
-
-  get messageCount(): number {
-    return this.sessionId ? -1 : 0;
+    this._model = modelId;
+    console.log(`[AgentBox] Model set to ${modelId}.`);
   }
 }
 
