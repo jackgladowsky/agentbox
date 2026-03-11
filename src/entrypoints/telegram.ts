@@ -7,6 +7,18 @@ import { agentbox } from "../core/agentbox.js";
 import { startTelegram } from "../connections/telegram.js";
 import { hasCredentials } from "../core/auth.js";
 
+// ── Global error handlers — prevent silent crashes ──────────────────────────
+
+process.on("uncaughtException", (err) => {
+  console.error("[AgentBox] Uncaught exception:", err);
+});
+
+process.on("unhandledRejection", (reason) => {
+  console.error("[AgentBox] Unhandled rejection:", reason);
+});
+
+// ── Main ────────────────────────────────────────────────────────────────────
+
 async function main() {
   if (!(await hasCredentials())) {
     console.error(

@@ -228,7 +228,7 @@ export async function startTelegram(): Promise<void> {
       }, 1000);
     };
 
-    const unsubscribe = agentbox.subscribe(`telegram-reply:${sourceId(ctx)}`, async (event: AgentEvent, evtSource: MessageSource) => {
+    const unsubscribe = agentbox.subscribe(`telegram-reply:${sourceId(ctx)}`, (event: AgentEvent, evtSource: MessageSource) => {
       if (evtSource.id !== source.id) return;
 
       if (event.type === "text_delta") {
@@ -236,33 +236,30 @@ export async function startTelegram(): Promise<void> {
         scheduleEdit();
       }
 
-      if (event.type === "done") {
+      if (event.type === "done" || event.type === "error") {
         unsubscribe();
         processingChats.delete(chatId);
         if (editTimeout) { clearTimeout(editTimeout); editTimeout = null; }
 
-        const finalText = accumulatedText.trim() || "_(no response)_";
-
-        if (finalText.length <= TELEGRAM_MAX_LENGTH) {
-          try {
-            await ctx.api.editMessageText(chatId, sentMsg.message_id, finalText);
-          } catch { /* unchanged */ }
-        } else {
-          try { await ctx.api.deleteMessage(chatId, sentMsg.message_id); } catch {}
-          for (const chunk of splitMessage(finalText)) await ctx.reply(chunk);
-        }
-      }
-
-      if (event.type === "error") {
-        unsubscribe();
-        processingChats.delete(chatId);
-        if (editTimeout) { clearTimeout(editTimeout); editTimeout = null; }
-        try {
-          await ctx.api.editMessageText(
-            chatId, sentMsg.message_id,
-            `⚠️ Error: ${event.message.slice(0, 500)}`
-          );
-        } catch {}
+        // Handle async Telegram API calls in a self-contained promise
+        (async () => {
+          if (event.type === "done") {
+            const finalText = accumulatedText.trim() || "_(no response)_";
+            if (finalText.length <= TELEGRAM_MAX_LENGTH) {
+              await ctx.api.editMessageText(chatId, sentMsg.message_id, finalText);
+            } else {
+              try { await ctx.api.deleteMessage(chatId, sentMsg.message_id); } catch {}
+              for (const chunk of splitMessage(finalText)) await ctx.reply(chunk);
+            }
+          } else {
+            await ctx.api.editMessageText(
+              chatId, sentMsg.message_id,
+              `⚠️ Error: ${event.message.slice(0, 500)}`
+            );
+          }
+        })().catch((err) => {
+          console.error("[Telegram] Failed to send response:", err);
+        });
       }
     });
 
@@ -316,8 +313,14 @@ export async function startTelegram(): Promise<void> {
     }
   });
 
+  // Catch grammY polling errors (e.g. 409 Conflict) to prevent process crashes
+  bot.catch((err) => {
+    console.error("[Telegram] Bot error:", err.message ?? err);
+  });
+
   console.log(`[Telegram] Starting ${displayName}...`);
   bot.start({
+    drop_pending_updates: true,
     onStart: (info) => console.log(`[Telegram] ${displayName} online as @${info.username}`),
   });
 }
