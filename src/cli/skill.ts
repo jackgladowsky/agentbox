@@ -11,90 +11,15 @@ import path from 'path';
 import { execSync, spawnSync } from 'child_process';
 import readline from 'readline';
 import { fileURLToPath } from 'url';
+import { Skill, parseSkillMd, loadAllSkills } from '../core/skills.js';
 
 // ---------------------------------------------------------------------------
 // Paths — relative to this file, works wherever agentbox is cloned
 // ---------------------------------------------------------------------------
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(__dirname, '..');
+const REPO_ROOT = path.resolve(__dirname, '../..');
 const SKILLS_DIR = path.join(REPO_ROOT, 'skills');
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-interface Skill {
-  name: string;
-  description: string;
-  cliType: 'prebuilt' | 'custom';
-  binary: string;
-  installCmd: string | null;
-  repo: string | null;
-  authRequired: 'yes' | 'no' | 'optional';
-  envVars: string[];
-}
-
-// ---------------------------------------------------------------------------
-// Parser
-// ---------------------------------------------------------------------------
-
-function parseSkillMd(filePath: string): Skill {
-  const raw = fs.readFileSync(filePath, 'utf8');
-  const lines = raw.split('\n');
-
-  const name = (lines.find(l => l.startsWith('# ')) ?? '').replace(/^# /, '').trim();
-  const descIdx = lines.findIndex(l => l.startsWith('# '));
-  const description = descIdx >= 0 ? (lines[descIdx + 2] ?? '').trim() : '';
-
-  const get = (label: string): string | null => {
-    const pattern = new RegExp(`^-\\s+\\*\\*${label}:\\*\\*\\s*\`?([^\`\\n]+)\`?`);
-    for (const line of lines) {
-      const m = line.match(pattern);
-      if (m) return m[1].trim();
-    }
-    return null;
-  };
-
-  const rawType = get('Type') ?? 'prebuilt';
-  const cliType: 'prebuilt' | 'custom' = rawType === 'custom' ? 'custom' : 'prebuilt';
-
-  const binary = get('Binary') ?? name;
-  const installCmd = get('Install');
-  const repo = get('Repo');
-
-  const rawAuth = (get('Required') ?? 'no').toLowerCase();
-  let authRequired: 'yes' | 'no' | 'optional' = 'no';
-  if (rawAuth === 'yes') authRequired = 'yes';
-  else if (rawAuth.startsWith('only') || rawAuth.startsWith('optional')) authRequired = 'optional';
-
-  const envVars: string[] = [];
-  for (const line of lines) {
-    const m = line.match(/^\s*-\s+\*\*Env:\*\*\s+`?([^`\n]+)`?/);
-    if (m) {
-      m[1].split(',').forEach(v => {
-        const trimmed = v.trim().replace(/`/g, '');
-        if (trimmed) envVars.push(trimmed);
-      });
-    }
-  }
-
-  return { name, description, cliType, binary, installCmd, repo, authRequired, envVars };
-}
-
-function loadAllSkills(): Skill[] {
-  if (!fs.existsSync(SKILLS_DIR)) {
-    console.error(`Skills directory not found: ${SKILLS_DIR}`);
-    process.exit(1);
-  }
-  return fs.readdirSync(SKILLS_DIR)
-    .filter(d => {
-      const p = path.join(SKILLS_DIR, d);
-      return fs.statSync(p).isDirectory() && fs.existsSync(path.join(p, 'skill.md'));
-    })
-    .map(d => parseSkillMd(path.join(SKILLS_DIR, d, 'skill.md')))
-    .sort((a, b) => a.name.localeCompare(b.name));
-}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -131,7 +56,7 @@ function missingEnvVars(skill: Skill): string[] {
 // ---------------------------------------------------------------------------
 
 function cmdList(): void {
-  const skills = loadAllSkills();
+  const skills = loadAllSkills(SKILLS_DIR);
   for (const s of skills) {
     const installed = isInstalled(s.binary);
     const icon = installed ? '✅' : '❌';
@@ -141,7 +66,7 @@ function cmdList(): void {
 }
 
 function cmdStatus(): void {
-  const skills = loadAllSkills();
+  const skills = loadAllSkills(SKILLS_DIR);
   for (const s of skills) {
     const installed = isInstalled(s.binary);
     const missing = missingEnvVars(s);
@@ -158,7 +83,7 @@ function cmdStatus(): void {
 }
 
 function cmdCheck(): void {
-  const skills = loadAllSkills();
+  const skills = loadAllSkills(SKILLS_DIR);
   const installed: string[] = [];
   const missing: string[] = [];
   const needsAuth: string[] = [];
