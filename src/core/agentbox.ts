@@ -76,7 +76,13 @@ class AgentBox {
 
   private async _runPrompt(content: string, source: MessageSource): Promise<void> {
     const emit = (event: AgentEvent) => {
-      for (const cb of this.listeners.values()) cb(event, source);
+      for (const cb of this.listeners.values()) {
+        try {
+          cb(event, source);
+        } catch (err) {
+          console.error("[AgentBox] Subscriber error:", err);
+        }
+      }
     };
 
     this._abortController = new AbortController();
@@ -94,9 +100,11 @@ class AgentBox {
     try {
       resetWatchdog();
 
+      const previousSessionId = this._sessionId;
+
       const stream = runTurn(content, {
         sessionId: this._sessionId,
-        systemPrompt: this._sessionId ? undefined : this.systemPrompt,
+        systemPrompt: this.systemPrompt,
         model: this._model,
         abortController: this._abortController,
       });
@@ -105,6 +113,14 @@ class AgentBox {
         resetWatchdog();
 
         if (event.type === "done") {
+          // Detect session resume failure: SDK gave us a different session ID
+          if (previousSessionId && event.sessionId && event.sessionId !== previousSessionId) {
+            console.warn(
+              `[AgentBox] Session changed: ${previousSessionId.slice(0, 8)}... → ${event.sessionId.slice(0, 8)}... ` +
+              `(old session may have expired)`
+            );
+          }
+
           this._sessionId = event.sessionId;
           if (event.sessionId) {
             saveSessionId(this.agentName, event.sessionId).catch(err =>

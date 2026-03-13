@@ -13,6 +13,7 @@ StandardOutput=journal
 StandardError=journal
 Environment=NODE_ENV=production
 Environment=AGENT=myagent
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
 
 [Install]
 WantedBy=default.target

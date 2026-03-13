@@ -50,9 +50,11 @@ export async function* runTurn(
     permissionMode: "bypassPermissions",
   };
 
-  // System prompt only applies to new sessions
-  // For existing sessions the SDK ignores it (history already has the context)
-  if (systemPrompt && !sessionId) {
+  // Always pass system prompt — for new sessions it sets the context,
+  // for resumed sessions the SDK ignores it (history already has the context).
+  // This ensures that if a resume silently creates a new session, it still
+  // gets the full system prompt rather than running with no context.
+  if (systemPrompt) {
     sdkOptions.systemPrompt = systemPrompt;
   }
 
