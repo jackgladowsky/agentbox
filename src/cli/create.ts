@@ -7,8 +7,7 @@
  *   agentbox-create <name>      — skip name prompt
  *
  * Creates ~/.agentbox/<name>/ with:
- *   config.json       — name, model (safe to commit)
- *   secrets.json      — tokens, API keys (gitignored, never commit)
+ *   config.json       — name, model, telegram config (gitignored)
  *   system.md         — static system prompt (editable)
  *   memory/           — daily summaries directory
  *   schedule.json     — scheduled tasks (empty by default)
@@ -97,15 +96,15 @@ You are ${name}. You run directly on hardware as an autonomous agent. You are no
 `;
 }
 
-function defaultConfig(name: string): object {
-  return { name };
-}
-
-function defaultSecrets(telegramToken: string, allowedUsers: number[]): object {
-  return {
-    telegramToken,
-    telegramAllowedUsers: allowedUsers,
-  };
+function defaultConfig(name: string, telegramToken?: string, allowedUsers?: number[]): object {
+  const config: Record<string, unknown> = { name };
+  if (telegramToken) {
+    config.telegram = {
+      token: telegramToken,
+      allowedUsers: allowedUsers ?? [],
+    };
+  }
+  return config;
 }
 
 function defaultSchedule(): object {
@@ -215,18 +214,9 @@ async function main() {
 
   await writeFile(
     join(agentPath, "config.json"),
-    JSON.stringify(defaultConfig(name), null, 2),
+    JSON.stringify(defaultConfig(name, token, allowedUsers), null, 2),
     "utf-8"
   );
-
-  const secrets = token ? defaultSecrets(token, allowedUsers) : null;
-  if (secrets) {
-    await writeFile(
-      join(agentPath, "secrets.json"),
-      JSON.stringify(secrets, null, 2),
-      "utf-8"
-    );
-  }
 
   await writeFile(join(agentPath, "system.md"), defaultSystemPrompt(name), "utf-8");
 
@@ -238,7 +228,7 @@ async function main() {
 
   await writeFile(
     join(agentPath, ".gitignore"),
-    "secrets.json\nscheduler.log\n",
+    "config.json\nscheduler.log\n",
     "utf-8"
   );
 
@@ -254,8 +244,7 @@ async function main() {
   // Summary
   console.log(`\n✅ Agent "${name}" created at ${agentPath}\n`);
   console.log("Files created:");
-  console.log(`  ${agentPath}/config.json     — name, model (safe to commit)`);
-  if (secrets) console.log(`  ${agentPath}/secrets.json    — tokens (gitignored)`);
+  console.log(`  ${agentPath}/config.json     — name, telegram config (gitignored)`);
   console.log(`  ${agentPath}/system.md       — system prompt (edit this!)`);
   console.log(`  ${agentPath}/memory/         — daily summaries`);
   console.log(`  ${agentPath}/schedule.json   — scheduled tasks`);
