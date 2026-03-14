@@ -84,32 +84,3 @@ export function loadAllSkills(skillsDir: string): Skill[] {
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
-// ---------------------------------------------------------------------------
-// Manifest builder (for system prompt injection)
-// ---------------------------------------------------------------------------
-
-const DEFAULT_SKILLS_BUDGET = 2000;
-
-/**
- * Build a condensed skills manifest for the system prompt.
- * Each skill gets a one-liner with name, description, and binary.
- * If the full manifest exceeds the budget, entries are trimmed to name + description only.
- */
-export function buildSkillsManifest(skillsDir: string, budget = DEFAULT_SKILLS_BUDGET): string {
-  const skills = loadAllSkills(skillsDir);
-  if (skills.length === 0) return "";
-
-  // Full format: name, description, binary
-  const fullEntries = skills.map(s =>
-    `- **${s.name}** — ${s.description} Binary: \`${s.binary}\`.`
-  );
-  const fullText = `# Available Skills\n\n${fullEntries.join("\n")}\n\nFor full documentation on any skill, read \`skills/<name>/skill.md\`.\n\n`;
-
-  if (fullText.length <= budget) return fullText;
-
-  // Compact format: name + description only
-  const compactEntries = skills.map(s => `- **${s.name}** — ${s.description}`);
-  const compactText = `# Available Skills\n\n${compactEntries.join("\n")}\n\nFor full docs: \`skills/<name>/skill.md\`.\n\n`;
-
-  return compactText;
-}
