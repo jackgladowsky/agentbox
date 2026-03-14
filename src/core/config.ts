@@ -3,8 +3,7 @@
  *
  * Each agent lives in ~/.agentbox/<agent-name>/
  *   config.json   — all settings including secrets (gitignore this file)
- *   SOUL.md       — personality / system prompt
- *   notes/        — persistent memory (read by workspace.ts)
+ *   system.md     — static system prompt (read by workspace.ts)
  *   memory/       — daily session summaries
  *
  * Agent is selected via AGENT env var (default: "agent").
@@ -14,7 +13,6 @@
  *   "name": "Rex",
  *   "timezone": "America/New_York",
  *   "model": "claude-sonnet-4-6",          // optional
- *   "openrouterKey": "sk-or-...",           // optional, for compaction
  *   "telegram": {
  *     "token": "...",
  *     "allowedUsers": [123456789]
@@ -42,8 +40,6 @@ export interface AgentConfig {
   telegram?: TelegramConfig;
   /** IANA timezone string (e.g. "America/New_York"). Defaults to system timezone. */
   timezone?: string;
-  /** OpenRouter API key for compaction */
-  openrouterKey?: string;
 }
 
 export function getAgentName(): string {
@@ -52,10 +48,6 @@ export function getAgentName(): string {
 
 export function agentDir(name: string = getAgentName()): string {
   return join(AGENTBOX_DIR, name);
-}
-
-export function notesDir(name: string = getAgentName()): string {
-  return join(agentDir(name), "notes");
 }
 
 export function validateAgentConfig(config: AgentConfig): string[] {
@@ -123,11 +115,3 @@ export async function loadAgentConfig(name: string = getAgentName()): Promise<Ag
   return config;
 }
 
-export async function loadSoul(name: string = getAgentName()): Promise<string> {
-  const soulPath = join(agentDir(name), "SOUL.md");
-  try {
-    return await readFile(soulPath, "utf-8");
-  } catch {
-    return "";
-  }
-}
