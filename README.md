@@ -62,13 +62,7 @@ claude  # follow the OAuth flow
 ## Running
 
 ```bash
-# Telegram bot
 AGENT=myagent npm run start:telegram
-
-# Or via systemd (recommended)
-cp systemd/agentbox.service ~/.config/systemd/user/myagent.service
-# Edit WorkingDirectory, ExecStart path, and AGENT= in the file
-systemctl --user enable --now myagent
 ```
 
 ## Multiple Agents
@@ -201,14 +195,6 @@ src/
     telegram.ts     Boot script for Telegram
     tui.tsx         Boot script for TUI
 ```
-
-See [CONTRIBUTING.md](./CONTRIBUTING.md) for how to add connections, skills, scheduled tasks, and more.
-
-## Philosophy
-
-See [VISION.md](./VISION.md) for the full picture.
-
-Short version: most AI agents are constrained by design. AgentBox starts from the opposite assumption — real autonomy, explicit security, technical users only.
 
 ## License
 
