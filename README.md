@@ -9,11 +9,12 @@ AgentBox gives Claude a persistent home on your hardware:
 - **Telegram interface** — talk to your agent from anywhere, with live streaming responses
 - **Full shell access** — the agent can run commands, read/write files, install packages, manage processes
 - **Persistent memory** — notes survive across sessions; the agent builds context about your system over time
+- **Session resumption** — conversations persist across restarts via the Claude Agent SDK
 - **Scheduled tasks** — cron-driven autonomous tasks with Telegram notifications
 - **Skills system** — modular markdown docs that teach the agent about available CLI tools
 - **Multi-agent support** — run multiple named agents on the same machine, each with their own identity and config
 - **Claude Code OAuth** — uses your existing Claude Pro/Max subscription, no separate API billing
-- **Context compaction** — long sessions auto-summarized via Gemini (1M context) so you never hit limits
+- **Smart note condensation** — over-budget notes auto-summarized via Haiku so context stays tight
 
 ## Prerequisites
 
@@ -35,18 +36,17 @@ npm run build
 
 ```bash
 npm run create
-# or: AGENT=myagent npm run create myagent
+# or: AGENT=myagent npm run create
 ```
 
 This walks you through naming your agent and setting up Telegram, then creates `~/.agentbox/<name>/` with everything you need:
 
 ```
 ~/.agentbox/myagent/
-  config.json       ← name, model, allowed Telegram users
-  secrets.json      ← Telegram token, OpenRouter key (gitignored)
+  config.json       ← name, model, telegram token, allowed users (gitignore this)
   SOUL.md           ← personality / system prompt (edit this)
   notes/            ← persistent memory (auto-managed by agent)
-  memory/           ← daily session summaries
+  session_id        ← current SDK session ID (auto-managed)
   schedule.json     ← scheduled tasks for the cron daemon
 ```
 
@@ -62,7 +62,17 @@ claude  # follow the OAuth flow
 ## Running
 
 ```bash
-AGENT=myagent npm run start:telegram
+# Development (tsx)
+AGENT=myagent npm run dev
+
+# Production (compiled)
+npm run build
+AGENT=myagent npm start
+
+# Or via systemd (recommended for always-on)
+cp systemd/agentbox.service ~/.config/systemd/user/myagent.service
+# Edit WorkingDirectory, ExecStart path, and AGENT= in the file
+systemctl --user enable --now myagent
 ```
 
 ## Multiple Agents
@@ -73,12 +83,10 @@ Each agent is fully isolated — separate identity, config, tokens, and memory:
 ~/.agentbox/
   myagent/
     config.json
-    secrets.json
     SOUL.md
     notes/
   otheragent/
     config.json
-    secrets.json
     SOUL.md
     notes/
 ```
@@ -87,35 +95,29 @@ Run simultaneously with different `AGENT=` env vars and different bot tokens.
 
 ## Configuration
 
-**`~/.agentbox/<name>/config.json`** (safe to commit):
+All settings live in a single `config.json` file per agent (gitignore it — it contains secrets):
+
 ```json
 {
   "name": "MyAgent",
   "model": "claude-sonnet-4-6",
+  "timezone": "America/New_York",
   "telegram": {
+    "token": "YOUR_BOT_TOKEN",
     "allowedUsers": [123456789]
-  }
-}
-```
-
-**`~/.agentbox/<name>/secrets.json`** (never commit):
-```json
-{
-  "telegramToken": "YOUR_BOT_TOKEN",
-  "telegramAllowedUsers": [123456789],
+  },
   "openrouterKey": "sk-or-..."
 }
 ```
 
-The `openrouterKey` is optional but recommended — it enables Gemini-powered context compaction (1M context window) instead of the fallback trim strategy.
-
-| Config field | Required | Description |
+| Field | Required | Description |
 |---|---|---|
 | `name` | yes | Display name |
 | `model` | no | Anthropic model ID (default: `claude-sonnet-4-6`) |
+| `timezone` | no | IANA timezone (default: system timezone) |
+| `telegram.token` | yes | Bot token from @BotFather |
 | `telegram.allowedUsers` | yes | Telegram user ID whitelist |
-| `telegramToken` (secrets) | yes | Bot token from @BotFather |
-| `openrouterKey` (secrets) | no | Enables Gemini compaction |
+| `openrouterKey` | no | OpenRouter API key (enables Gemini compaction) |
 
 ## Telegram Commands
 
@@ -123,11 +125,10 @@ The `openrouterKey` is optional but recommended — it enables Gemini-powered co
 |---|---|
 | `/help` | Show available commands |
 | `/clear` `/reset` `/new` | Clear conversation history |
-| `/status` | Agent name, model, message count |
+| `/status` | Agent name, model, session ID, current commit |
 | `/model <id>` | Switch model (e.g. `/model claude-opus-4-6`) |
-| `/thinking` | Toggle extended thinking |
-| `/update` | Pull latest code and restart |
-| `/build` | Rebuild dist/ without restarting |
+| `/update` | Pull latest code, build, and restart |
+| `/build` | Rebuild and restart (no git pull) |
 
 Send text, images, files, or voice messages — all supported.
 
@@ -150,7 +151,8 @@ The scheduler daemon runs cron jobs with isolated agent instances. Configure in 
 ```
 
 ```bash
-AGENT=myagent npm run start:scheduler
+AGENT=myagent npm run scheduler       # dev
+AGENT=myagent npm run start:scheduler # production
 ```
 
 Hot-reload schedule without restarting: `kill -HUP <scheduler-pid>`
@@ -165,35 +167,32 @@ npm run skill -- install github
 npm run skill -- remove github
 ```
 
-Available skills are in `skills/` — each has a `SKILL.md` describing commands and usage.
+Available skills are in `skills/` — each has a `skill.md` describing commands and usage.
 
 ## Architecture
 
 ```
 src/
-  core/             Agent brain and shared modules
-    agent.ts        Agent factory, tools, context compaction
-    agentbox.ts     Singleton — all connections talk through this
-    auth.ts         Claude Code OAuth credential loading
-    checkpoint.ts   Persist/restore context across restarts
-    config.ts       Config + secrets loader
-    memory.ts       Idle-triggered session write-back
-    workspace.ts    System prompt builder
+  core/                 Agent brain and shared modules
+    agent.ts            SDK query interface, session ID persistence
+    agentbox.ts         Singleton — all connections talk through this
+    auth.ts             Claude Code OAuth credential loading
+    config.ts           Config loader (single config.json per agent)
+    skills.ts           Skill parsing & manifest generation
+    workspace.ts        System prompt builder (preamble + SOUL + skills + notes)
 
-  connections/      Interface adapters
-    telegram.ts     Telegram (grammY) — streaming, commands, file uploads
-    tui.tsx         Terminal UI (Ink) — interactive local interface
+  connections/
+    telegram.ts         Telegram (grammY) — streaming, commands, file uploads
 
   daemon/
-    scheduler.ts    Cron daemon with isolated per-task agents
+    scheduler.ts        Cron daemon with isolated per-task agents
 
   cli/
-    create.ts       agentbox-create onboarding wizard
-    skill.ts        agentbox-skill manager
+    create.ts           agentbox-create onboarding wizard
+    skill.ts            agentbox-skill manager
 
   entrypoints/
-    telegram.ts     Boot script for Telegram
-    tui.tsx         Boot script for TUI
+    telegram.ts         Boot script for Telegram
 ```
 
 ## License
