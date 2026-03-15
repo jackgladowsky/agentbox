@@ -96,12 +96,12 @@ export async function startTelegram(): Promise<void> {
   // ── Commands ──────────────────────────────────────────────────────────────
 
   const HELP_TEXT =
-    `*${displayName}* commands:\n\n` +
-    `\`/help\` — show this message\n` +
-    `\`/clear\` — clear conversation history\n` +
-    `\`/status\` — show model, session, and commit info\n` +
-    `\`/stop\` — cancel the current response\n\n` +
-    `Send text, images, files, or voice messages and I'll handle them.`;
+    `*${displayName}*\n\n` +
+    `  /help    — show this message\n` +
+    `  /clear   — clear conversation history\n` +
+    `  /status  — model, session & commit info\n` +
+    `  /stop    — cancel the current response\n\n` +
+    `_Send text, images, files, or voice._`;
 
   bot.command("start", async (ctx) => {
     await ctx.reply(HELP_TEXT, { parse_mode: "Markdown" });
@@ -113,7 +113,7 @@ export async function startTelegram(): Promise<void> {
 
   bot.command("clear", async (ctx) => {
     agentbox.clearMessages();
-    await ctx.reply("History cleared.");
+    await ctx.reply("✓ History cleared");
   });
 
   bot.command("status", async (ctx) => {
@@ -123,17 +123,19 @@ export async function startTelegram(): Promise<void> {
     } catch { /* ignore */ }
 
     const session = agentbox.sessionId?.slice(0, 8) ?? "none";
-    await ctx.reply(
-      `Agent: ${displayName}\n` +
-      `Model: ${agentbox.modelId ?? "default"}\n` +
-      `Session: ${session}\n` +
-      `Commit: ${commit}`
-    );
+    const lines = [
+      `*${displayName}*`,
+      ``,
+      `Model    \`${agentbox.modelId ?? "default"}\``,
+      `Session  \`${session}\``,
+      `Commit   \`${commit}\``,
+    ];
+    await ctx.reply(lines.join("\n"), { parse_mode: "Markdown" });
   });
 
   bot.command("stop", async (ctx) => {
     agentbox.abort();
-    await ctx.reply("Stopped.");
+    await ctx.reply("✓ Stopped");
   });
 
   // ── Message handler ───────────────────────────────────────────────────────
