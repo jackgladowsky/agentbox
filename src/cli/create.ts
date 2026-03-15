@@ -130,6 +130,7 @@ function defaultSchedule(): object {
 
 function telegramService(name: string, agentboxRoot: string): string {
   const nodeExec = process.execPath;
+  const nodeBinDir = dirname(nodeExec);
   return `[Unit]
 Description=AgentBox ${name} — Telegram bot
 After=network-online.target
@@ -139,6 +140,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=${agentboxRoot}
 Environment=AGENT=${name}
+Environment=PATH=${nodeBinDir}:/usr/local/bin:/usr/bin:/bin
 ExecStart=${nodeExec} dist/entrypoints/telegram.js
 Restart=on-failure
 RestartSec=5
@@ -150,6 +152,7 @@ WantedBy=default.target
 
 function schedulerService(name: string, agentboxRoot: string): string {
   const nodeExec = process.execPath;
+  const nodeBinDir = dirname(nodeExec);
   return `[Unit]
 Description=AgentBox ${name} — Scheduler daemon
 After=network-online.target
@@ -159,6 +162,7 @@ Wants=network-online.target
 Type=simple
 WorkingDirectory=${agentboxRoot}
 Environment=AGENT=${name}
+Environment=PATH=${nodeBinDir}:/usr/local/bin:/usr/bin:/bin
 ExecStart=${nodeExec} dist/daemon/scheduler.js
 Restart=on-failure
 RestartSec=5
