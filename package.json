@@ -10,7 +10,8 @@
     "build": "tsc",
     "start": "node dist/entrypoints/telegram.js",
     "start:scheduler": "node dist/daemon/scheduler.js",
-    "create": "tsx src/cli/create.ts"
+    "create": "tsx src/cli/create.ts",
+    "deploy": "tsx src/cli/deploy.ts"
   },
   "repository": {
     "type": "git",
