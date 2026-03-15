@@ -170,9 +170,9 @@ WantedBy=default.target
 
 // ── Deploy helpers ───────────────────────────────────────────────────────────
 
-function runCmd(cmd: string): void {
+function runCmd(cmd: string, cwd?: string): void {
   try {
-    execSync(cmd, { stdio: "inherit" });
+    execSync(cmd, { stdio: "inherit", cwd });
   } catch {
     console.error(`Command failed: ${cmd}`);
     process.exit(1);
@@ -186,7 +186,7 @@ async function deployAgent(name: string, agentboxRoot: string): Promise<void> {
 
   // Build
   console.log("\n⚙️  Building...");
-  runCmd(`npm run build --prefix ${agentboxRoot}`);
+  runCmd("npm run build", agentboxRoot);
 
   // Install systemd services
   console.log("\n📦 Installing systemd services...");
@@ -212,7 +212,8 @@ async function deployAgent(name: string, agentboxRoot: string): Promise<void> {
 
 async function main() {
   // Derive agentbox project root from this file's location (src/create.ts → project root)
-  const agentboxRoot = dirname(dirname(fileURLToPath(import.meta.url)));
+  // src/cli/create.ts → src/cli → src → project root
+  const agentboxRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
   const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
 
