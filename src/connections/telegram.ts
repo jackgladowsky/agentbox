@@ -7,19 +7,16 @@
  * Features:
  * - Streaming responses with live message edits (feels like typing)
  * - File/image/voice downloads from Telegram → agent (saves to /tmp)
- * - /clear, /reset, /new, /model, /status, /update, /build, /help commands
+ * - /help, /clear, /status, /stop commands
  */
 
 import { Bot, Context } from "grammy";
 import { writeFile, mkdir } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
-import { exec } from "child_process";
-import { promisify } from "util";
+import { execSync } from "child_process";
 import { agentbox, type MessageSource, type AgentEvent } from "../core/agentbox.js";
 import { loadAgentConfig, getAgentName } from "../core/config.js";
-
-const execAsync = promisify(exec);
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -61,25 +58,6 @@ async function downloadFile(bot: Bot, fileId: string, filename: string): Promise
 /** chatIds currently being processed — drop duplicate rapid messages. */
 const processingChats = new Set<number>();
 
-// ── Shared build+restart helper ───────────────────────────────────────────────
-
-async function buildAndRestart(ctx: Context): Promise<void> {
-  await ctx.reply("🔨 Building...");
-  try {
-    await execAsync("npm run build", { cwd: process.cwd() });
-  } catch (buildErr: any) {
-    const output = (buildErr.stdout ?? "") + (buildErr.stderr ?? "");
-    await ctx.reply(`⚠️ Build failed — not restarting:\n${output.trim().slice(0, 1500)}`);
-    return;
-  }
-
-  await ctx.reply("✓ Build succeeded. Restarting...");
-  setTimeout(() => {
-    console.log("[Telegram] restarting via systemd");
-    process.kill(process.pid, "SIGTERM");
-  }, 1500);
-}
-
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 export async function startTelegram(): Promise<void> {
@@ -119,12 +97,10 @@ export async function startTelegram(): Promise<void> {
 
   const HELP_TEXT =
     `*${displayName}* commands:\n\n` +
-    `\`/clear\` — clear conversation history (also: \`/reset\`, \`/new\`)\n` +
-    `\`/status\` — show model, session ID, current commit\n` +
-    `\`/model <id>\` — switch model (e.g. \`/model claude-opus-4-6\`)\n` +
-    `\`/update\` — git pull + build + restart\n` +
-    `\`/build\` — build + restart (no git pull)\n` +
-    `\`/help\` — show this message\n\n` +
+    `\`/help\` — show this message\n` +
+    `\`/clear\` — clear conversation history\n` +
+    `\`/status\` — show model, session, and commit info\n` +
+    `\`/stop\` — cancel the current response\n\n` +
     `Send text, images, files, or voice messages and I'll handle them.`;
 
   bot.command("start", async (ctx) => {
@@ -135,20 +111,15 @@ export async function startTelegram(): Promise<void> {
     await ctx.reply(HELP_TEXT, { parse_mode: "Markdown" });
   });
 
-  async function handleReset(ctx: Context) {
+  bot.command("clear", async (ctx) => {
     agentbox.clearMessages();
-    await ctx.reply("✓ History cleared. Fresh session started.");
-  }
-
-  bot.command("clear", handleReset);
-  bot.command("reset", handleReset);
-  bot.command("new", handleReset);
+    await ctx.reply("History cleared.");
+  });
 
   bot.command("status", async (ctx) => {
     let commit = "unknown";
     try {
-      const { stdout } = await execAsync("git rev-parse --short HEAD", { cwd: process.cwd() });
-      commit = stdout.trim();
+      commit = execSync("git rev-parse --short HEAD", { cwd: process.cwd() }).toString().trim();
     } catch { /* ignore */ }
 
     const session = agentbox.sessionId?.slice(0, 8) ?? "none";
@@ -160,31 +131,9 @@ export async function startTelegram(): Promise<void> {
     );
   });
 
-  bot.command("model", async (ctx) => {
-    const modelId = ctx.match?.trim();
-    if (!modelId) { await ctx.reply("Usage: /model <model-id>"); return; }
-    agentbox.setModel(modelId);
-    await ctx.reply(`✓ Switched to ${modelId}`);
-  });
-
-  bot.command("update", async (ctx) => {
-    await ctx.reply("⬇️ Pulling latest code...");
-    try {
-      const { stdout: pullOut } = await execAsync("git pull --ff-only", { cwd: process.cwd() });
-      const summary = pullOut.trim();
-      if (summary.includes("Already up to date")) {
-        await ctx.reply("✓ Already up to date. Rebuilding anyway...");
-      } else {
-        await ctx.reply(`✓ Pulled:\n${summary}`);
-      }
-      await buildAndRestart(ctx);
-    } catch (err: any) {
-      await ctx.reply(`⚠️ Update failed:\n${err.message}`);
-    }
-  });
-
-  bot.command("build", async (ctx) => {
-    await buildAndRestart(ctx);
+  bot.command("stop", async (ctx) => {
+    agentbox.abort();
+    await ctx.reply("Stopped.");
   });
 
   // ── Message handler ───────────────────────────────────────────────────────
