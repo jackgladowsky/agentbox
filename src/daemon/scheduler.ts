@@ -2,8 +2,10 @@
  * AgentBox Scheduler Daemon
  *
  * Standalone process (separate from the Telegram bot) that runs scheduled
- * tasks on cron intervals. Each task gets its own isolated session so there's
- * no shared state with the Telegram conversation.
+ * tasks on cron intervals. Each task maintains its own persistent session
+ * so the agent retains context across runs (no shared state with the
+ * Telegram conversation). Sessions are stored per task ID in
+ * ~/.agentbox/<name>/sessions/.
  *
  * Agent is selected via AGENT env var (default: "agent").
  * Config: ~/.agentbox/<name>/schedule.json
@@ -11,7 +13,7 @@
  */
 
 import { schedule, validate } from "node-cron";
-import { readFile, appendFile, mkdir } from "fs/promises";
+import { readFile, writeFile, appendFile, mkdir } from "fs/promises";
 import { join } from "path";
 import { homedir } from "os";
 import { runTurn } from "../core/agent.js";
@@ -65,30 +67,67 @@ async function log(message: string): Promise<void> {
   }
 }
 
+// ── Per-task session persistence ──────────────────────────────────────────────
+
+function taskSessionPath(taskId: string): string {
+  return join(AGENT_DIR, "sessions", `${taskId}.session`);
+}
+
+async function loadTaskSessionId(taskId: string): Promise<string | undefined> {
+  try {
+    const id = await readFile(taskSessionPath(taskId), "utf-8");
+    return id.trim() || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function saveTaskSessionId(taskId: string, sessionId: string): Promise<void> {
+  const path = taskSessionPath(taskId);
+  await mkdir(join(AGENT_DIR, "sessions"), { recursive: true });
+  await writeFile(path, sessionId, "utf-8");
+}
+
 // ── Agent execution ───────────────────────────────────────────────────────────
 
 /**
- * Run a prompt against a fresh, isolated Claude Code session.
- * Returns the full text response.
- * Each scheduler task gets a fresh session (no persistence).
+ * Run a prompt against a Claude Code session, resuming from a previous
+ * session if available. Returns the text response and the session ID
+ * so the caller can persist it for next run.
  */
 async function runAgentPrompt(
   systemPrompt: string,
   prompt: string,
-): Promise<string> {
+  sessionId?: string,
+): Promise<{ output: string; sessionId: string }> {
   let output = "";
+  let resolvedSessionId = "";
 
-  for await (const event of runTurn(prompt, { systemPrompt })) {
+  for await (const event of runTurn(prompt, { systemPrompt, sessionId })) {
     if (event.type === "text_delta") {
       output += event.text;
     }
     if (event.type === "error") {
       throw new Error(event.message);
     }
-    // "done" — we just let the loop end
+    if (event.type === "done") {
+      resolvedSessionId = event.sessionId;
+    }
   }
 
-  return output.trim() || "(no output)";
+  return { output: output.trim() || "(no output)", sessionId: resolvedSessionId };
+}
+
+// ── Task prompt builder ───────────────────────────────────────────────────────
+
+function buildTaskPrompt(task: ScheduledTask): string {
+  return [
+    `You are running as a scheduled task. Your output will be sent as a Telegram notification, so be concise and focus on what's actionable. Compare against previous runs when relevant.`,
+    ``,
+    `Task: ${task.name} (${task.id})`,
+    ``,
+    task.prompt,
+  ].join("\n");
 }
 
 // ── Task runner ───────────────────────────────────────────────────────────────
@@ -106,7 +145,20 @@ async function runTask(
   let success = true;
 
   try {
-    output = await runAgentPrompt(systemPrompt, task.prompt);
+    const previousSessionId = await loadTaskSessionId(task.id);
+    if (previousSessionId) {
+      await log(`[${task.id}] Resuming session ${previousSessionId.slice(0, 8)}...`);
+    }
+
+    const taskPrompt = buildTaskPrompt(task);
+
+    const result = await runAgentPrompt(systemPrompt, taskPrompt, previousSessionId);
+    output = result.output;
+
+    if (result.sessionId) {
+      await saveTaskSessionId(task.id, result.sessionId);
+    }
+
     await log(`[${task.id}] Completed. Output length: ${output.length} chars`);
   } catch (err: any) {
     success = false;
