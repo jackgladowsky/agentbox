@@ -124,11 +124,9 @@ All settings live in a single `config.json` file per agent (gitignore it — it 
 | Command | Description |
 |---|---|
 | `/help` | Show available commands |
-| `/clear` `/reset` `/new` | Clear conversation history |
-| `/status` | Agent name, model, session ID, current commit |
-| `/model <id>` | Switch model (e.g. `/model claude-opus-4-6`) |
-| `/update` | Pull latest code, build, and restart |
-| `/build` | Rebuild and restart (no git pull) |
+| `/clear` | Clear conversation history |
+| `/status` | Agent name, model, session, and commit info |
+| `/stop` | Cancel the current response |
 
 Send text, images, files, or voice messages — all supported.
 
