@@ -49,6 +49,11 @@ async function deploy(name: string) {
     process.exit(1);
   }
 
+  console.log(`\n📥 Pulling latest from main...`);
+  run("git checkout master");
+  run("git pull origin master");
+  run("npm install");
+
   console.log(`\n⚙️  Rebuilding ${name}...`);
   run("npm run build");
 
