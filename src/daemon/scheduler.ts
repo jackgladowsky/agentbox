@@ -21,7 +21,7 @@ import { sendTelegramMessage } from "../core/telegram-utils.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type NotifyMode = boolean | "on_issue";
+type NotifyMode = boolean | "on_issue" | "always" | "never";
 
 interface ScheduledTask {
   id: string;
@@ -142,8 +142,8 @@ async function runTask(
  * Resolve whether to send a Telegram notification.
  */
 function resolveNotify(notify: NotifyMode, success: boolean, output: string): boolean {
-  if (notify === false) return false;
-  if (notify === true) return true;
+  if (notify === false || notify === "never") return false;
+  if (notify === true || notify === "always") return true;
   if (notify === "on_issue") {
     if (!success) return true;
     const lower = output.toLowerCase();
