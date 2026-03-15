@@ -17,24 +17,7 @@ import { tmpdir } from "os";
 import { execSync } from "child_process";
 import { agentbox, type MessageSource, type AgentEvent } from "../core/agentbox.js";
 import { loadAgentConfig, getAgentName } from "../core/config.js";
-
-// ── Config ────────────────────────────────────────────────────────────────────
-
-const TELEGRAM_MAX_LENGTH = 4096;
-
-function splitMessage(text: string, maxLen = TELEGRAM_MAX_LENGTH): string[] {
-  if (text.length <= maxLen) return [text];
-  const chunks: string[] = [];
-  let remaining = text;
-  while (remaining.length > 0) {
-    let chunk = remaining.slice(0, maxLen);
-    const lastNewline = chunk.lastIndexOf("\n");
-    if (lastNewline > maxLen * 0.5) chunk = remaining.slice(0, lastNewline);
-    chunks.push(chunk);
-    remaining = remaining.slice(chunk.length).trimStart();
-  }
-  return chunks;
-}
+import { splitMessage, TELEGRAM_MAX_LENGTH } from "../core/telegram-utils.js";
 
 function sourceId(ctx: Context): string {
   return `telegram:${ctx.chat?.id ?? "unknown"}`;
@@ -42,7 +25,7 @@ function sourceId(ctx: Context): string {
 
 async function downloadFile(bot: Bot, fileId: string, filename: string): Promise<string> {
   const file = await bot.api.getFile(fileId);
-  const url = `https://api.telegram.org/file/bot${(bot as any).token}/${file.file_path}`;
+  const url = `https://api.telegram.org/file/bot${bot.token}/${file.file_path}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`Failed to download file: ${res.statusText}`);
   const buf = Buffer.from(await res.arrayBuffer());
@@ -197,7 +180,9 @@ export async function startTelegram(): Promise<void> {
           if (event.type === "done") {
             const finalText = accumulatedText.trim() || "_(no response)_";
             if (finalText.length <= TELEGRAM_MAX_LENGTH) {
-              await ctx.api.editMessageText(chatId, sentMsg.message_id, finalText);
+              if (finalText !== lastEditedText) {
+                await ctx.api.editMessageText(chatId, sentMsg.message_id, finalText);
+              }
             } else {
               try { await ctx.api.deleteMessage(chatId, sentMsg.message_id); } catch {}
               for (const chunk of splitMessage(finalText)) await ctx.reply(chunk);

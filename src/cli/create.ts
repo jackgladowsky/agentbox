@@ -260,7 +260,7 @@ async function main() {
   console.log("\nNext steps:");
   console.log(`  1. Edit ${agentPath}/system.md to define your agent's personality`);
   console.log(`  2. Build once: npm run build   (compiles TypeScript → dist/)`);
-  console.log(`  3. Run: AGENT=${name} npm run start:telegram`);
+  console.log(`  3. Run: AGENT=${name} npm run dev`);
   if (token) {
     console.log(`\n  To run as a systemd service:`);
     console.log(`    sudo cp ${agentPath}/${serviceFileName} /etc/systemd/system/`);

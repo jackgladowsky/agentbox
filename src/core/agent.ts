@@ -26,7 +26,7 @@ export type AgentEvent =
 /**
  * Run one turn with the Claude Code agent.
  *
- * Pass sessionId to resume an existing session (replaces checkpoint.ts).
+ * Pass sessionId to resume an existing session.
  * The done event carries the session_id so callers can persist it.
  */
 export async function* runTurn(
@@ -110,7 +110,6 @@ function* translateMessage(msg: SDKMessage): Generator<AgentEvent> {
 }
 
 // ── Session ID persistence ────────────────────────────────────────────────────
-// Replaces checkpoint.ts entirely.
 // SDK persists session history in ~/.claude/projects/ automatically.
 // We just track the session_id string so we can resume after restart.
 
