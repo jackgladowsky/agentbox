@@ -1,12 +1,13 @@
 /**
- * Rex Scheduler Daemon
+ * AgentBox Scheduler Daemon
  *
  * Standalone process (separate from the Telegram bot) that runs scheduled
  * tasks on cron intervals. Each task gets its own isolated session so there's
  * no shared state with the Telegram conversation.
  *
- * Config: ~/.agentbox/rex/schedule.json
- * Log:    ~/.agentbox/rex/scheduler.log
+ * Agent is selected via AGENT env var (default: "agent").
+ * Config: ~/.agentbox/<name>/schedule.json
+ * Log:    ~/.agentbox/<name>/scheduler.log
  */
 
 import { schedule, validate } from "node-cron";
@@ -15,7 +16,7 @@ import { join } from "path";
 import { homedir } from "os";
 import { runTurn } from "../core/agent.js";
 import { loadWorkspaceContext } from "../core/workspace.js";
-import { loadAgentConfig, agentDir } from "../core/config.js";
+import { loadAgentConfig, getAgentName, agentDir } from "../core/config.js";
 import { sendTelegramMessage } from "../core/telegram-utils.js";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -46,7 +47,7 @@ interface TaskResult {
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
-const AGENT_NAME = process.env.AGENT ?? "rex";
+const AGENT_NAME = getAgentName();
 const AGENT_DIR = agentDir(AGENT_NAME);
 const SCHEDULE_PATH = join(AGENT_DIR, "schedule.json");
 const LOG_PATH = join(AGENT_DIR, "scheduler.log");

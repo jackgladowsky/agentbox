@@ -5,13 +5,11 @@
   "main": "index.js",
   "scripts": {
     "dev": "tsx src/entrypoints/telegram.ts",
-    "telegram": "tsx src/entrypoints/telegram.ts",
     "scheduler": "tsx src/daemon/scheduler.ts",
     "test": "tsc --noEmit",
     "build": "tsc",
     "start": "node dist/entrypoints/telegram.js",
     "start:scheduler": "node dist/daemon/scheduler.js",
-    "skill": "tsx src/cli/skill.ts",
     "create": "tsx src/cli/create.ts"
   },
   "repository": {
@@ -46,7 +44,6 @@
     "typescript": "^5.9.3"
   },
   "bin": {
-    "agentbox-skill": "./src/cli/skill.ts",
     "agentbox-create": "./src/cli/create.ts"
   }
 }
