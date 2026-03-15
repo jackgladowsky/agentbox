@@ -180,7 +180,9 @@ export async function startTelegram(): Promise<void> {
           if (event.type === "done") {
             const finalText = accumulatedText.trim() || "_(no response)_";
             if (finalText.length <= TELEGRAM_MAX_LENGTH) {
-              await ctx.api.editMessageText(chatId, sentMsg.message_id, finalText);
+              if (finalText !== lastEditedText) {
+                await ctx.api.editMessageText(chatId, sentMsg.message_id, finalText);
+              }
             } else {
               try { await ctx.api.deleteMessage(chatId, sentMsg.message_id); } catch {}
               for (const chunk of splitMessage(finalText)) await ctx.reply(chunk);
