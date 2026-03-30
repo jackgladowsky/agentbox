@@ -11,7 +11,8 @@
     "start": "node dist/entrypoints/telegram.js",
     "start:scheduler": "node dist/daemon/scheduler.js",
     "create": "tsx src/cli/create.ts",
-    "deploy": "tsx src/cli/deploy.ts"
+    "deploy": "tsx src/cli/deploy.ts",
+    "update": "tsx src/cli/update.ts"
   },
   "repository": {
     "type": "git",
@@ -45,6 +46,7 @@
     "typescript": "^5.9.3"
   },
   "bin": {
-    "agentbox-create": "./src/cli/create.ts"
+    "agentbox-create": "./src/cli/create.ts",
+    "agentbox-update": "./src/cli/update.ts"
   }
 }
