@@ -13,7 +13,8 @@
 import { schedule, validate } from "node-cron";
 import { readFile, appendFile, mkdir } from "fs/promises";
 import { join } from "path";
-import { homedir } from "os";
+import { execFile } from "child_process";
+import { promisify } from "util";
 import { runTurn } from "../core/agent.js";
 import { loadWorkspaceContext } from "../core/workspace.js";
 import { loadAgentConfig, getAgentName, agentDir } from "../core/config.js";
@@ -51,6 +52,17 @@ const AGENT_NAME = getAgentName();
 const AGENT_DIR = agentDir(AGENT_NAME);
 const SCHEDULE_PATH = join(AGENT_DIR, "schedule.json");
 const LOG_PATH = join(AGENT_DIR, "scheduler.log");
+const REMINDERS_CLI = join(process.cwd(), "skills", "reminders", "reminders.sh");
+const REMINDER_POLL_MS = 60_000;
+const execFileAsync = promisify(execFile);
+
+interface Reminder {
+  id: string;
+  message: string;
+  due: string;
+  created: string;
+  status: "pending" | "fired" | "cancelled";
+}
 
 // ── Logging ───────────────────────────────────────────────────────────────────
 
@@ -171,6 +183,76 @@ async function loadSchedule(): Promise<ScheduledTask[]> {
   return parsed.tasks;
 }
 
+// ── Reminder polling ─────────────────────────────────────────────────────────
+
+async function fireDueReminders(
+  telegramToken: string | undefined,
+  telegramChatId: number | undefined,
+): Promise<void> {
+  let reminders: Reminder[] = [];
+
+  try {
+    const { stdout } = await execFileAsync(REMINDERS_CLI, ["fire-due"], {
+      env: { ...process.env, AGENT: AGENT_NAME },
+      maxBuffer: 1024 * 1024,
+    });
+    const trimmed = stdout.trim();
+    if (!trimmed) return;
+
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) {
+      reminders = parsed;
+    } else {
+      throw new Error("reminders.sh fire-due did not return a JSON array");
+    }
+  } catch (err: any) {
+    await log(`[reminders] fire-due failed: ${err?.message ?? String(err)}`);
+    return;
+  }
+
+  if (reminders.length === 0) return;
+
+  await log(`[reminders] ${reminders.length} reminder(s) due`);
+
+  if (!telegramToken || !telegramChatId) {
+    await log("[reminders] Telegram not configured; due reminders were marked fired but not delivered");
+    return;
+  }
+
+  for (const reminder of reminders) {
+    const message = `Reminder: ${reminder.message}`;
+
+    try {
+      await sendTelegramMessage(telegramToken, telegramChatId, message);
+      await log(`[reminders] Sent reminder ${reminder.id}`);
+    } catch (err: any) {
+      await log(`[reminders] Failed to send reminder ${reminder.id}: ${err?.message ?? String(err)}`);
+    }
+  }
+}
+
+function startReminderLoop(
+  telegramToken: string | undefined,
+  telegramChatId: number | undefined,
+): void {
+  let running = false;
+
+  const tick = async () => {
+    if (running) return;
+    running = true;
+    try {
+      await fireDueReminders(telegramToken, telegramChatId);
+    } finally {
+      running = false;
+    }
+  };
+
+  void tick();
+  setInterval(() => {
+    void tick();
+  }, REMINDER_POLL_MS);
+}
+
 // ── Task registration ─────────────────────────────────────────────────────────
 
 const activeCronJobs = new Map<string, ReturnType<typeof schedule>>();
@@ -236,13 +318,11 @@ async function main(): Promise<void> {
   await log(`Loaded ${tasks.length} task(s) from ${SCHEDULE_PATH}`);
 
   const registered = await registerTasks(tasks, systemPrompt, telegramToken, telegramChatId);
+  startReminderLoop(telegramToken, telegramChatId);
 
-  if (registered === 0) {
-    await log("No valid tasks registered — exiting.");
-    process.exit(1);
-  }
-
-  await log(`Scheduler running with ${registered} task(s). PID: ${process.pid}`);
+  await log(
+    `Scheduler running with ${registered} cron task(s) plus reminder polling every ${Math.round(REMINDER_POLL_MS / 1000)}s. PID: ${process.pid}`
+  );
 
   process.on("SIGINT", async () => { await log("Scheduler stopping (SIGINT)"); process.exit(0); });
   process.on("SIGTERM", async () => { await log("Scheduler stopping (SIGTERM)"); process.exit(0); });
